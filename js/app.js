@@ -3,26 +3,22 @@ const APP_ROUTES = {
   dashboard: { title: 'Painel administrativo', render: renderPainelInterno },
   documentos: { title: 'Documentos internos', render: renderDocumentos },
   tarefas: { title: 'Tarefas e prazos', render: renderTarefas },
-  cidadaos: { title: 'Cidadãos', render: renderCidadaos },
-  servicos: { title: 'Serviços municipais', render: renderServicos },
-  protocolos: { title: 'Ouvidoria', render: renderProtocolos },
-  ouvidoria: { title: 'Ouvidoria', render: renderProtocolos },
-  obras: { title: 'Obras e infraestrutura', render: renderObras },
-  secretarias: { title: 'Secretarias', render: renderSecretarias },
-  financeiro: { title: 'Gestão financeira', render: renderFinanceiro, charts: initFinanceiroCharts }
+  secretarias: { title: 'Secretarias', render: renderSecretarias }
 };
 
 let currentRoute = 'dashboard';
+const routeHistory = [];
 
-function navigate(route) {
+function navigate(route, { recordHistory = true } = {}) {
   const page = APP_ROUTES[route];
   if (!page) {
     showToast('Esta tela não está disponível nesta versão.', 'warning');
     return;
   }
 
-  destroyPageCharts();
-  currentRoute = route === 'ouvidoria' ? 'protocolos' : route;
+  const nextRoute = route === 'ouvidoria' ? 'protocolos' : route;
+  if (recordHistory && nextRoute !== currentRoute) routeHistory.push(currentRoute);
+  currentRoute = nextRoute;
   document.getElementById('app-content').innerHTML = page.render();
   document.getElementById('current-page').textContent = page.title;
   document.querySelectorAll('.nav-item[data-route]').forEach(item => {
@@ -32,35 +28,30 @@ function navigate(route) {
     else item.removeAttribute('aria-current');
   });
 
-  if (page.charts) {
-    if (window.Chart) page.charts();
-    else showChartFallbacks();
-  }
   atualizarContagemNotificacoes();
   alternarNotificacoes(false);
   toggleSidebar(false);
+  atualizarBotaoVoltar();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function destroyPageCharts() {
-  if (!window.Chart || !window.Chart.getChart) return;
-  document.querySelectorAll('canvas').forEach(canvas => {
-    const chart = window.Chart.getChart(canvas);
-    if (chart) chart.destroy();
-  });
+function voltarRota() {
+  const previousRoute = routeHistory.pop();
+  if (!previousRoute) {
+    showToast('Você já está na primeira tela desta navegação.', 'info');
+    atualizarBotaoVoltar();
+    return;
+  }
+  navigate(previousRoute, { recordHistory: false });
 }
 
-function showChartFallbacks() {
-  document.querySelectorAll('.chart-container canvas').forEach(canvas => {
-    const message = document.createElement('div');
-    message.className = 'chart-fallback';
-    message.textContent = 'Gráficos indisponíveis sem conexão com a biblioteca de gráficos.';
-    canvas.replaceWith(message);
-  });
-}
-
-function chartLibraryReady() {
-  if (window.appReady && (currentRoute === 'dashboard' || currentRoute === 'financeiro')) navigate(currentRoute);
+function atualizarBotaoVoltar() {
+  const button = document.getElementById('back-route');
+  if (!button) return;
+  const canGoBack = routeHistory.length > 0;
+  button.disabled = !canGoBack;
+  button.title = canGoBack ? 'Voltar à tela anterior' : 'Você está no início da navegação';
+  button.setAttribute('aria-label', button.title);
 }
 
 function fecharModal(id) {
@@ -122,36 +113,6 @@ function downloadCSV(filename, columns, rows) {
   showToast('Arquivo CSV baixado.', 'success');
 }
 
-function renderProtocolos() {
-  const rows = DB.protocolos.map(item => `
-    <tr data-search="${escapeHTML([item.protocolo, item.cidadao, item.tipo, item.assunto, item.secretaria, item.status].join(' ').toLowerCase())}">
-      <td><span class="table-id">${escapeHTML(item.protocolo)}</span></td>
-      <td>${escapeHTML(item.tipo)}</td>
-      <td>${escapeHTML(item.assunto)}</td>
-      <td>${escapeHTML(item.secretaria)}</td>
-      <td>${getStatusBadge(item.status)}</td>
-      <td>${formatDate(item.prazo)}</td>
-    </tr>`).join('');
-  return `
-    <div class="page-header"><div class="page-header-info"><h2>Ouvidoria</h2><p>Consulta dos protocolos registrados na base de demonstração.</p></div>
-      <div class="page-header-actions"><button class="btn btn-secondary" type="button" onclick="exportarProtocolos()">Exportar CSV</button></div>
-    </div>
-    <div class="grid-3 compact-stats">
-      ${[
-        ['Protocolos', DB.protocolos.length],
-        ['Em aberto', DB.protocolos.filter(p => p.status === 'aberto').length],
-        ['Em andamento', DB.protocolos.filter(p => p.status === 'em_andamento' || p.status === 'em_analise').length]
-      ].map(([label, value]) => `<div class="stat-card"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>`).join('')}
-    </div>
-    <section class="card">
-      <div class="card-header"><div><h3 class="card-title">Protocolos registrados</h3><p class="card-subtitle">A lista é somente para consulta nesta versão.</p></div>
-        <label class="table-search"><span class="sr-only">Pesquisar protocolos</span><input class="form-control" type="search" placeholder="Pesquisar protocolo, assunto ou setor" oninput="filtrarTabela(this, 'protocolos-table')"></label>
-      </div>
-      <div class="table-wrapper"><table class="data-table" id="protocolos-table"><thead><tr><th>Número</th><th>Tipo</th><th>Assunto</th><th>Secretaria</th><th>Status</th><th>Prazo</th></tr></thead><tbody>${rows || emptyTableRow(6, 'Nenhum protocolo cadastrado.')}</tbody></table></div>
-      <p class="table-empty hidden" id="protocolos-empty">Nenhum resultado para a pesquisa.</p>
-    </section>`;
-}
-
 function renderSecretarias() {
   const rows = DB.secretarias.map(item => `
     <tr data-search="${escapeHTML([item.nome, item.secretario, item.email, item.telefone].join(' ').toLowerCase())}">
@@ -160,9 +121,7 @@ function renderSecretarias() {
       <td><a class="table-link" href="mailto:${escapeHTML(item.email)}">${escapeHTML(item.email)}</a></td>
     </tr>`).join('');
   return `
-    <div class="page-header"><div class="page-header-info"><h2>Secretarias</h2><p>Diretório das unidades administrativas na base de demonstração.</p></div>
-      <div class="page-header-actions"><button class="btn btn-secondary" type="button" onclick="exportarSecretarias()">Exportar CSV</button></div>
-    </div>
+    <div class="page-header"><div class="page-header-info"><h2>Secretarias</h2><p>Lista de referência usada para organizar documentos e tarefas; os dados exibidos são exemplos.</p></div></div>
     <section class="card">
       <div class="card-header"><div><h3 class="card-title">Unidades administrativas</h3><p class="card-subtitle">Consulta de contatos e indicadores cadastrados.</p></div>
         <label class="table-search"><span class="sr-only">Pesquisar secretarias</span><input class="form-control" type="search" placeholder="Pesquisar secretaria ou responsável" oninput="filtrarTabela(this, 'secretarias-table')"></label>
@@ -188,16 +147,6 @@ function filtrarTabela(input, tableId) {
 
 function emptyTableRow(columns, message) {
   return `<tr><td colspan="${columns}" class="empty-cell">${escapeHTML(message)}</td></tr>`;
-}
-
-function exportarProtocolos() {
-  downloadCSV('protocolos_ouvidoria.csv', ['Número', 'Cidadão', 'Tipo', 'Assunto', 'Secretaria', 'Status', 'Prioridade', 'Abertura', 'Prazo', 'Resposta'],
-    DB.protocolos.map(p => [p.protocolo, p.cidadao, p.tipo, p.assunto, p.secretaria, p.status, p.prioridade, p.data, p.prazo, p.resposta]));
-}
-
-function exportarSecretarias() {
-  downloadCSV('secretarias.csv', ['Secretaria', 'Responsável', 'Servidores', 'Orçamento', 'Telefone', 'E-mail', 'Endereço'],
-    DB.secretarias.map(s => [s.nome, s.secretario, s.funcionarios, s.orcamento, s.telefone, s.email, s.endereco]));
 }
 
 document.addEventListener('DOMContentLoaded', () => {

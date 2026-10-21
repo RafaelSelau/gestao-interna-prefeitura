@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0b1220">
+  <meta name="theme-color" content="#f4f7fb">
   <title>SIGAM — Gestão Administrativa Municipal</title>
   <link rel="stylesheet" href="css/main.css">
 </head>
@@ -16,6 +16,7 @@
     <symbol id="i-briefcase" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V4h8v3M3 12h18M10 12v2h4v-2"/></symbol>
     <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M4 5h15a2 2 0 0 1 2 2v13H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3h13"/><path d="M21 11h-5a2 2 0 0 0 0 4h5zM16 13h.01"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m14 5-7 7 7 7M7 12h14"/></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
     <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="7.2"/><path d="m16 16 5 5"/></symbol>
@@ -33,23 +34,10 @@
           <button class="nav-item active" type="button" data-route="dashboard" title="Dashboard"><span class="nav-icon"><svg><use href="#i-home"></use></svg></span><span>Dashboard</span></button>
         </div>
         <div class="nav-section">
-          <div class="nav-section-title">Trabalho interno</div>
+          <div class="nav-section-title">Organização</div>
           <button class="nav-item" type="button" data-route="documentos" title="Documentos internos"><span class="nav-icon"><svg><use href="#i-clipboard"></use></svg></span><span>Documentos</span></button>
           <button class="nav-item" type="button" data-route="tarefas" title="Tarefas e prazos"><span class="nav-icon"><svg><use href="#i-briefcase"></use></svg></span><span>Tarefas</span></button>
-          <a class="nav-item" href="portal.html" title="Portal interno de demandas"><span class="nav-icon"><svg><use href="#i-clipboard"></use></svg></span><span>Central de demandas (API)</span></a>
-        </div>
-        <div class="nav-section">
-          <div class="nav-section-title">Módulos de demonstração</div>
-          <button class="nav-item" type="button" data-route="cidadaos" title="Cidadãos"><span class="nav-icon"><svg><use href="#i-users"></use></svg></span><span>Cidadãos</span></button>
-          <button class="nav-item" type="button" data-route="servicos" title="Serviços"><span class="nav-icon"><svg><use href="#i-clipboard"></use></svg></span><span>Serviços</span></button>
-          <a class="nav-item" href="cidadao.html" title="Portal de serviços ao cidadão"><span class="nav-icon"><svg><use href="#i-users"></use></svg></span><span>Portal do cidadão (API)</span></a>
-          <button class="nav-item" type="button" data-route="protocolos" title="Ouvidoria"><span class="nav-icon"><svg><use href="#i-clipboard"></use></svg></span><span>Ouvidoria</span></button>
-        </div>
-        <div class="nav-section">
-          <div class="nav-section-title">Consultas demonstrativas</div>
-          <button class="nav-item" type="button" data-route="obras" title="Obras"><span class="nav-icon"><svg><use href="#i-building"></use></svg></span><span>Obras</span></button>
-          <button class="nav-item" type="button" data-route="secretarias" title="Secretarias"><span class="nav-icon"><svg><use href="#i-briefcase"></use></svg></span><span>Secretarias</span></button>
-          <button class="nav-item" type="button" data-route="financeiro" title="Financeiro"><span class="nav-icon"><svg><use href="#i-wallet"></use></svg></span><span>Financeiro</span></button>
+          <button class="nav-item" type="button" data-route="secretarias" title="Secretarias"><span class="nav-icon"><svg><use href="#i-building"></use></svg></span><span>Secretarias</span></button>
         </div>
       </nav>
       <div class="sidebar-footer"><div class="demo-note">Protótipo local. Não use documentos sigilosos ou dados reais.</div></div>
@@ -58,6 +46,7 @@
       <header class="top-header">
         <div class="header-left">
           <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Recolher ou expandir menu" aria-expanded="true" title="Recolher ou expandir menu" onclick="toggleSidebar()"><svg><use href="#i-menu"></use></svg></button>
+          <button class="header-back-button" id="back-route" type="button" aria-label="Você está no início da navegação" title="Você está no início da navegação" onclick="voltarRota()" disabled><svg aria-hidden="true"><use href="#i-arrow-left"></use></svg></button>
           <div class="header-breadcrumb"><span>SIGAM</span><span aria-hidden="true">/</span><span class="current-page" id="current-page">Dashboard</span></div>
         </div>
         <div class="header-right">
@@ -72,13 +61,7 @@
   </div>
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <div class="modal-overlay" id="modal-sessao"><section class="modal session-modal" role="dialog" aria-modal="true" aria-labelledby="session-title"><div class="modal-header"><h2 class="modal-title" id="session-title">Sessão de demonstração</h2><button class="modal-close" type="button" aria-label="Fechar" onclick="fecharModal('modal-sessao')">×</button></div><p>Este ambiente funciona sem login e sem perfil autenticado. As alterações ficam apenas no armazenamento local deste navegador.</p><p class="form-hint">Os nomes “restrito” e “responsável” são metadados de demonstração; não representam permissões reais.</p><div class="modal-actions"><button class="btn btn-primary" type="button" onclick="fecharModal('modal-sessao')">Entendi</button></div></section></div>
-  <script async src="https://cdn.jsdelivr.net/npm/chart.js" onload="window.chartLibraryReady && window.chartLibraryReady()"></script>
   <script defer src="js/data.js"></script>
-  <script defer src="js/dashboard.js"></script>
-  <script defer src="js/cidadaos.js"></script>
-  <script defer src="js/servicos.js"></script>
-  <script defer src="js/obras.js"></script>
-  <script defer src="js/financeiro.js"></script>
   <script defer src="js/interno.js"></script>
   <script defer src="js/app.js"></script>
 </body>

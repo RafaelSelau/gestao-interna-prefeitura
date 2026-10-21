@@ -89,3 +89,15 @@ Suíte atual: 10 testes automatizados da API aprovados; sintaxe dos módulos Jav
 | Layout móvel do login | Inspecionar Portal em viewport estreito | Cartão cabe na tela sem rolagem horizontal | Conferido visualmente em 304 px; barra horizontal removida | Aprovado |
 | Portal do cidadão | Abrir solicitação, gerar credencial, acompanhar com chave válida/inválida e responder pedido de informação | Solicitante vê só status e mensagens públicas do próprio protocolo | API exercitada; páginas e validação de chave implementadas | Parcial |
 | Anexos privados e notificações externas | Anexar arquivo seguro e avisar cidadão por canal institucional | Arquivos privados e notificações autorizadas | Não implementados | Pendente |
+
+## Simplificação e tema claro do sistema principal — 21/10/2026
+
+| Fluxo | Procedimento | Resultado | Situação |
+|---|---|---|---|
+| Menu principal | Abrir Dashboard, Documentos, Tarefas e Secretarias | As quatro telas renderizaram; Central de Demandas e módulos de demonstração não aparecem no menu | Aprovado no navegador |
+| Botão Voltar | Abrir Documentos e retornar ao Dashboard | O botão voltou à tela anterior sem salvar dados de teste | Aprovado no navegador |
+| Abertura de formulários | Abrir e cancelar Novo documento e Nova tarefa | Os formulários abriram e fecharam; nenhum registro foi criado | Aprovado no navegador |
+| Pesquisa de secretaria | Filtrar a lista pelo nome “Secretaria de Saúde” | Uma linha correspondente ficou visível | Aprovado no navegador |
+| Painel principal | Conferir atalhos, tarefas prioritárias, documentos próximos e pendências | A agenda ainda não implementada foi removida; os atalhos restantes levam a Documentos e Tarefas | Aprovado por inspeção no navegador |
+| Tema claro | Conferir menu, cabeçalho, cartões, campos e painel principal | Fundo claro, texto escuro e controles legíveis | Aprovado por inspeção visual no navegador |
+| Código carregado | Verificar scripts do sistema principal | Permanecem os dados, os módulos internos e a navegação; scripts de módulos de demonstração e Chart.js foram removidos da página principal | Aprovado por inspeção do código |
