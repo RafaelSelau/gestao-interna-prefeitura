@@ -1,0 +1,6 @@
+backend/sigpm.sqlite3
+backend/sigpm.sqlite3-shm
+backend/sigpm.sqlite3-wal
+backend/private_files/
+__pycache__/
+backend/**/__pycache__/
