@@ -42,3 +42,6 @@ body{background:radial-gradient(ellipse at 85% -12%,#e1edff 0,transparent 34%),l
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
 
 .admin-notice{margin:0 0 18px;border:1px solid #d7e5fb;background:linear-gradient(125deg,#eef5ff,#f7faff);color:#375a8d}.admin-notice strong{color:#1d3c6a}.admin-grid .button:disabled{cursor:not-allowed}
+
+.button[href]{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}.top-actions .nav-button{white-space:nowrap}.form-navigation{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}.form-navigation .button{font-size:12px}
+
