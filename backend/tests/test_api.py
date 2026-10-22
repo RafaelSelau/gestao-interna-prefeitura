@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app import API, bootstrap_admin, database
+from backend.app import API, bootstrap_admin, bootstrap_demo, database
 
 
 class APITest(unittest.TestCase):
@@ -76,6 +76,50 @@ class APITest(unittest.TestCase):
     def test_initial_admin_is_one_time_only(self):
         with self.assertRaises(ValueError):
             bootstrap_admin(self.db_path, "second", "Segundo", "senha-segura-123")
+
+    def test_isolated_demo_account_uses_authorized_email_and_consulta_role(self):
+        demo_path = Path(self.temp.name) / "isolated-demo.sqlite3"
+        bootstrap_demo(demo_path, "gestor-senha-ficticia-1", "consulta-senha-ficticia-1", "demo@example.invalid")
+        original_admin = self.request("POST", "/api/login", {"username": "admin", "password": "senha-segura-123"}, authenticated=False)
+        self.assertEqual(original_admin["status"], 200)
+
+        self.api = API(demo_path)
+        login = self.request("POST", "/api/login", {"username": "demo@example.invalid", "password": "consulta-senha-ficticia-1"}, authenticated=False)
+        self.assertEqual(login["status"], 200)
+        self.assertEqual(login["body"]["role"], "consulta")
+        with database(demo_path) as db:
+            profile = db.execute("SELECT work_email FROM employee_profiles WHERE user_id=?", (login["body"]["id"],)).fetchone()
+            self.assertEqual(profile["work_email"], "demo@example.invalid")
+        demo_status = self.request("GET", "/api/setup/status", authenticated=False)
+        self.assertTrue(demo_status["body"]["demoConfigured"])
+        with database(self.db_path) as db:
+            admin = db.execute("SELECT username,role FROM users WHERE username='admin'").fetchone()
+            self.assertEqual((admin["username"], admin["role"]), ("admin", "admin"))
+
+    def test_public_entry_shows_postcard_and_dashboard_requires_an_authenticated_session(self):
+        health = self.request("GET", "/api/health", authenticated=False)
+        self.assertEqual(health["status"], 200)
+        self.assertEqual(health["body"]["apiVersion"], "sigpm-dashboard-v1")
+        entry = self.request("GET", "/", authenticated=False)
+        self.assertEqual(entry["status"], 200)
+        self.assertIn("Bem-vindo ao SIGPM".encode(), entry["body"])
+        index = self.request("GET", "/index.html", authenticated=False)
+        self.assertEqual(index["status"], 200)
+        self.assertIn(b"/welcome.html", index["body"])
+        private_page = self.request("GET", "/produtividade.html", authenticated=False)
+        self.assertEqual(private_page["status"], 302)
+        self.assertEqual(private_page["headers"]["Location"], "/portal.html")
+        self.assertFalse(self.request("GET", "/api/setup/status", authenticated=False)["body"]["demoConfigured"])
+        self.login()
+        authenticated = self.request("GET", "/index.html")
+        self.assertEqual(authenticated["status"], 200)
+        self.assertIn(b"SIGPM", authenticated["body"])
+        self.assertEqual(self.request("GET", "/produtividade.html")["status"], 200)
+        logout = self.request("POST", "/api/logout", {})
+        self.assertEqual(logout["status"], 200)
+        self.assertEqual(self.request("GET", "/api/me")["status"], 401)
+        self.assertEqual(self.request("GET", "/index.html")["status"], 200)
+        self.assertEqual(self.request("GET", "/produtividade.html")["status"], 302)
 
     def test_first_run_admin_wizard_is_local_and_one_time(self):
         fresh_path = Path(self.temp.name) / "first-run.sqlite3"
@@ -254,6 +298,67 @@ class APITest(unittest.TestCase):
         self.assertEqual(self.request("GET", f"/api/documents/{document_id}/download")["status"], 404)
         self.assertEqual(self.request("GET", "/backend/sigpm.sqlite3", authenticated=False)["status"], 404)
         self.assertEqual(self.request("GET", "/not-a-folder/../backend/sigpm.sqlite3", authenticated=False)["status"], 404)
+
+    def test_dashboard_and_secretariat_crud_use_persistent_linked_records(self):
+        import base64
+        from datetime import date, timedelta
+
+        self.login()
+        created = self.request("POST", "/api/departments", {"name": "Secretaria de Teste", "description": "Equipe de validação"})
+        self.assertEqual(created["status"], 201)
+        department_id = created["body"]["id"]
+        due_date = (date.today() + timedelta(days=3)).isoformat()
+        task = self.request("POST", "/api/tasks", {"title": "Revisar o plano", "departmentId": department_id,
+            "dueAt": due_date + "T10:00", "priority": "alta"})
+        self.assertEqual(task["status"], 201)
+        task_id = task["body"]["id"]
+        self.assertEqual(self.request("GET", f"/api/tasks/{task_id}")["body"]["department_id"], department_id)
+        self.assertEqual(len(self.request("GET", f"/api/tasks?departmentId={department_id}")["body"]), 1)
+
+        document = self.request("POST", "/api/documents", {"title": "Relatório da secretaria", "category": "relatorio",
+            "departmentId": department_id, "fileName": "relatorio.pdf",
+            "fileBase64": base64.b64encode(b"%PDF-1.4\nrelatorio").decode()})
+        self.assertEqual(document["status"], 201)
+        document_id = document["body"]["id"]
+        self.assertEqual(document["body"]["department_name"], "Secretaria de Teste")
+        self.assertEqual(len(self.request("GET", f"/api/documents?departmentId={department_id}")["body"]), 1)
+        self.assertEqual(self.request("PUT", f"/api/tasks/{task_id}", {"departmentId": department_id})["body"]["department_id"], department_id)
+        self.assertEqual(self.request("PUT", f"/api/documents/{document_id}", {"departmentId": department_id})["body"]["department_id"], department_id)
+
+        self.api = API(self.db_path)
+        self.assertEqual(self.request("GET", f"/api/tasks/{task_id}")["body"]["department_id"], department_id)
+        self.assertEqual(self.request("GET", f"/api/documents/{document_id}")["body"]["department_id"], department_id)
+
+        dashboard = self.request("GET", "/api/dashboard")["body"]
+        self.assertEqual(dashboard["counts"]["total_tarefas"], 1)
+        self.assertEqual(dashboard["counts"]["total_documentos"], 1)
+        self.assertEqual(dashboard["counts"]["total_secretarias"], 1)
+        self.assertEqual(dashboard["counts"]["proximas"], 1)
+        self.assertEqual(dashboard["tasksByDepartment"][0]["total"], 1)
+
+        updated = self.request("PUT", f"/api/departments/{department_id}",
+            {"name": "Secretaria Atualizada", "description": "Descrição revisada"})
+        self.assertEqual(updated["status"], 200)
+        self.assertEqual(updated["body"]["name"], "Secretaria Atualizada")
+        self.assertEqual(self.request("GET", f"/api/documents/{document_id}")["body"]["department_name"], "Secretaria Atualizada")
+        blocked = self.request("DELETE", f"/api/departments/{department_id}")
+        self.assertEqual(blocked["status"], 409)
+        self.assertIn("tarefas", blocked["body"]["references"])
+
+        empty = self.request("POST", "/api/departments", {"name": "Secretaria sem vínculos"})["body"]
+        self.assertEqual(self.request("DELETE", f"/api/departments/{empty['id']}")["status"], 200)
+
+    def test_department_write_routes_remain_admin_only(self):
+        self.login()
+        department = self.request("POST", "/api/departments", {"name": "Unidade protegida"})["body"]
+        self.assertEqual(self.request("POST", "/api/users", {"username": "consulta", "name": "Pessoa Consulta",
+            "role": "consulta", "password": "senha-consulta-123", "departmentId": department["id"]})["status"], 201)
+        login = self.request("POST", "/api/login", {"username": "consulta", "password": "senha-consulta-123"}, authenticated=False)
+        self.cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
+        self.csrf = login["body"]["csrfToken"]
+        self.assertEqual(self.request("GET", f"/api/departments/{department['id']}")["status"], 200)
+        self.assertEqual(self.request("PUT", f"/api/departments/{department['id']}", {"name": "Alteração indevida"})["status"], 403)
+        self.assertEqual(self.request("DELETE", f"/api/departments/{department['id']}")["status"], 403)
 
     def test_citizen_submission_private_tracking_and_information_response(self):
         self.login()

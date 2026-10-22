@@ -1,0 +1,32 @@
+/* Retornos entre os portais independentes do SIGPM. */
+.product-home {
+  flex-shrink: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.product-home:focus-visible {
+  outline: 3px solid #8ab7ff;
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
+.product-home-hint {
+  display: block;
+  margin-top: 3px;
+  color: #b9c9e2;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.product-signed-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+@media (max-width: 760px) {
+  .topbar { flex-wrap: wrap; }
+  .top-actions { flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+}

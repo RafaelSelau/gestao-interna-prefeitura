@@ -1,10 +1,10 @@
-# Matriz de verificação do SIGAM
+# Matriz de verificação do SIGPM
 
 Verificação executada em 20/10/2026. Os testes funcionais foram executados em Node.js com DOM simulado. Eles validam a lógica e a geração das telas, mas não substituem conferência visual em navegador real.
 
 | Funcionalidade | Resultado esperado | Resultado obtido | Situação |
 |---|---|---|---|
-| Sintaxe JavaScript | Todos os módulos carregam sem erro | `node --check` aprovou os 8 módulos SIGAM e o novo `js/portal.js` | Aprovado |
+| Sintaxe JavaScript | Todos os módulos carregam sem erro | `node --check` aprovou os 8 módulos SIGPM e o novo `js/portal.js` | Aprovado |
 | Recursos locais e CSS | CSS e scripts referenciados existem; chaves CSS balanceadas | 9 referências locais encontradas; 494 blocos CSS balanceados | Aprovado |
 | Ações dos controles | Cada função chamada por handlers de clique, teclado, busca e formulário existe | Conferência estática encontrou 62 nomes de função declarados | Aprovado |
 | Navegação | As telas disponíveis renderizam conteúdo | 10 chaves de rota renderizaram; incluem duas chaves para a tela de Ouvidoria | Aprovado |
@@ -36,7 +36,7 @@ Verificação executada em 20/10/2026. Os testes funcionais foram executados em 
 | CSRF e duplicidade | Enviar escrita sem token correto e duplicar secretaria | Rejeitar escrita e responder conflito | 403 e 409 verificados | Aprovado |
 | Auditoria | Consultar eventos após login e cadastro | Ações identificadas por ator/entidade e cadeia de hash | Eventos de cadastro verificados | Aprovado |
 | Integração da interface antiga com a API | Usar telas de documentos/tarefas pelo backend | Dados compartilhados no servidor | Interface ainda grava em `localStorage` | Pendente |
-| Teste HTTP do servidor integrado | Consultar página e `/api/health` em 127.0.0.1:8001 | Página SIGAM e API integradas respondem | HTTP 200 e `status: ok` verificados | Aprovado |
+| Teste HTTP do servidor integrado | Consultar página e `/api/health` em 127.0.0.1:8001 | Página SIGPM e API integradas respondem | HTTP 200 e `status: ok` verificados | Aprovado |
 
 ## Organização pessoal do funcionário — verificação em 21/10/2026
 
@@ -90,14 +90,48 @@ Suíte atual: 10 testes automatizados da API aprovados; sintaxe dos módulos Jav
 | Portal do cidadão | Abrir solicitação, gerar credencial, acompanhar com chave válida/inválida e responder pedido de informação | Solicitante vê só status e mensagens públicas do próprio protocolo | API exercitada; páginas e validação de chave implementadas | Parcial |
 | Anexos privados e notificações externas | Anexar arquivo seguro e avisar cidadão por canal institucional | Arquivos privados e notificações autorizadas | Não implementados | Pendente |
 
-## Simplificação e tema claro do sistema principal — 21/10/2026
+## Navegação completa, tema claro e responsividade — 22/10/2026
 
-| Fluxo | Procedimento | Resultado | Situação |
+| Fluxo | Procedimento | Resultado obtido | Situação |
 |---|---|---|---|
-| Menu principal | Abrir Dashboard, Documentos, Tarefas e Secretarias | As quatro telas renderizaram; Central de Demandas e módulos de demonstração não aparecem no menu | Aprovado no navegador |
-| Botão Voltar | Abrir Documentos e retornar ao Dashboard | O botão voltou à tela anterior sem salvar dados de teste | Aprovado no navegador |
-| Abertura de formulários | Abrir e cancelar Novo documento e Nova tarefa | Os formulários abriram e fecharam; nenhum registro foi criado | Aprovado no navegador |
-| Pesquisa de secretaria | Filtrar a lista pelo nome “Secretaria de Saúde” | Uma linha correspondente ficou visível | Aprovado no navegador |
-| Painel principal | Conferir atalhos, tarefas prioritárias, documentos próximos e pendências | A agenda ainda não implementada foi removida; os atalhos restantes levam a Documentos e Tarefas | Aprovado por inspeção no navegador |
-| Tema claro | Conferir menu, cabeçalho, cartões, campos e painel principal | Fundo claro, texto escuro e controles legíveis | Aprovado por inspeção visual no navegador |
-| Código carregado | Verificar scripts do sistema principal | Permanecem os dados, os módulos internos e a navegação; scripts de módulos de demonstração e Chart.js foram removidos da página principal | Aprovado por inspeção do código |
+| Menu e rotas internas | Abrir Dashboard, Documentos, Tarefas, Secretarias, Cidadãos, Serviços, Ouvidoria, Obras e Financeiro | As nove telas renderizaram. Os módulos demonstrativos foram separados visualmente dos portais conectados à API | Aprovado no navegador |
+| Histórico e botão Voltar | Percorrer módulos, voltar de Financeiro para Obras e de Tarefas para Documentos | A URL com hash e a tela atual acompanharam o histórico do navegador; o botão retornou à tela anterior | Aprovado no navegador |
+| Formulário de documentos | Abrir e cancelar Novo documento | Formulário abriu e fechou sem criar registro | Aprovado no navegador |
+| Formulário de tarefas | Abrir e cancelar Nova tarefa | Formulário abriu e fechou sem criar registro | Aprovado no navegador |
+| Responsividade do painel | Medir o painel em 360, 390, 768, 1024 e 1440 px | Nenhuma rolagem horizontal; o cabeçalho em 1024 px foi ajustado após detectar excesso de largura | Aprovado no navegador |
+| Responsividade de módulos internos | Abrir todas as nove rotas em 360 px | Nenhuma rota excedeu a largura do viewport; tabelas mantiveram seu contêiner rolável | Aprovado no navegador |
+| Portais da API | Abrir login interno, portal do cidadão e a página sem sessão da Minha rotina em 360, 390, 768, 1024 e 1440 px | Nenhuma página excedeu a largura do viewport | Aprovado no navegador |
+| Navegação entre portais | Abrir a Central, voltar ao sistema principal, abrir o Portal do Cidadão e voltar; abrir Minha rotina e usar seu link de retorno | Links de retorno e atalhos para outras áreas foram exibidos e utilizados | Aprovado no navegador |
+| Indicadores financeiros | Abrir Financeiro e conferir gráficos/tabelas de exemplo | Gráficos e tabelas renderizaram; os valores continuam identificados como demonstração e usam dados locais | Aprovado no navegador |
+| Tema e clareza dos dados | Revisar navegação, formulários e descrições dos módulos | Tema claro mantido. A navegação distingue armazenamento local demonstrativo da API municipal | Aprovado por inspeção |
+| Sintaxe JavaScript | Executar `node --check` em todos os arquivos `js/*.js` | Todos os módulos passaram | Aprovado |
+| API automatizada | Executar `python -m unittest discover -s backend/tests -t . -v` | 10 testes aprovados em 5,4 segundos, incluindo autenticação, CSRF, permissões, demandas, portal público e isolamento da produtividade | Aprovado |
+| Revisão de alterações | Executar `git diff --check` | Sem erros de espaço ou formatação no diff | Aprovado |
+| Exportação CSV e anexos locais | Abrir os controles e conferir os handlers; não baixar arquivos nem gravar registros reais durante a verificação visual | O código de exportação e as validações de anexo existem; download e seleção de arquivo não foram exercitados nesta sessão | Parcial |
+| Integração dos módulos antigos | Conferir a persistência dos módulos de cidadãos, serviços, obras, documentos, tarefas e finanças | Continuam usando `localStorage` e exemplos; não compartilham dados com a API. A API cobre Central de Demandas, Portal do Cidadão e produtividade do funcionário | Pendente de migração |
+| Fluxos autenticados no navegador | Percorrer ações de demanda, administração e produtividade com uma conta real | Não alterados manualmente para evitar gravações na base municipal; os fluxos de API permanecem cobertos por banco temporário na suíte automatizada | Parcial |
+
+Os testes visuais foram feitos no servidor integrado em `127.0.0.1:8001`. A matriz mede ausência de rolagem horizontal e confirma renderização; não substitui teste de usabilidade com funcionários, auditoria de segurança ou validação dos dados oficiais do município.
+
+> As entradas anteriores registram verificações históricas de versões anteriores da interface. O estado atual está descrito nesta seção.
+
+## Escopo simplificado e dashboard SIGPM — 22/10/2026
+
+| Verificação | Resultado | Situação |
+|---|---|---|
+| Navegação principal | A página autenticada apresenta Dashboard, Tarefas, Documentos, Secretarias e Sair da conta | Aprovado por inspeção do código |
+| Pós-login e proteção | Login segue para o dashboard; /index.html e /produtividade.html redirecionam sessões anônimas ao login | Aprovado nos testes automatizados |
+| Dashboard com dados reais | Contadores, vencimentos próximos, status, distribuição por secretaria, tarefas/documentos recentes e atividade usam consultas SQLite | Aprovado nos testes automatizados da API |
+| Tarefas e documentos | CRUD, status de tarefa, filtros, associação opcional a secretaria, arquivo privado e isolamento por usuário | Aprovado nos testes automatizados da API |
+| Secretarias | Cadastro/edição administrativa; exclusão bloqueada para referências em setores, usuários, demandas, tarefas ou documentos; leitura permanece disponível conforme perfil | Aprovado nos testes automatizados da API |
+| Persistência após reinicialização da API | Teste recria a instância da API e relê tarefa e documento associados | Aprovado em banco temporário |
+| Compatibilidade dos dados existentes | Migrações SQLite acrescentam colunas opcionais; não removem tabelas ou registros | Aprovado pela suíte automatizada em bancos temporários |
+| JavaScript | node --check em todos os arquivos JavaScript que permanecem | Aprovado |
+| Python | py_compile em backend/app.py e backend/server.py | Aprovado |
+| Suíte da API | python -m unittest backend.tests.test_api -v | 14 testes aprovados |
+| Recursos removidos | Busca de referências nos HTML/CSS/JS não encontrou usos para os arquivos de demonstração removidos | Aprovado por auditoria estática |
+| git diff --check | Conferência do diff de alterações | Aprovado |
+| Servidor local | Servidor integrado iniciou em 127.0.0.1:8001; requisições de verificação do terminal foram bloqueadas pela política de socket local do ambiente | Parcial |
+| Inspeção visual, console e larguras 360/390/768/1024/1440 | A automação do navegador foi encerrada por não conseguir determinar com confiança a URL atual; não foi possível inspecionar a tela ou o console | Pendente |
+
+Para conferir a aplicação, abra http://127.0.0.1:8001/. Entre com uma conta já configurada para acessar o painel. Esta verificação não usou credenciais nem criou registros na base municipal.

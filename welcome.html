@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f8fc">
+  <meta name="description" content="SIGPM — Sistema de Gestão e Produtividade Municipal.">
+  <title>SIGPM — Sistema de Gestão e Produtividade Municipal</title>
+  <link rel="stylesheet" href="css/welcome.css">
+  <script defer src="js/welcome.js"></script>
+</head>
+<body>
+  <div class="welcome-page">
+    <header class="welcome-header">
+      <a class="institution" href="/" aria-label="SIGPM — início">
+        <span class="institution-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M5 26h22M8 26V12l8-6 8 6v14M12 15h2m4 0h2M12 19h2m4 0h2M14 26v-4h4v4"/></svg></span>
+        <span><strong>SIGPM</strong><small>Sistema de Gestão e Produtividade Municipal</small></span>
+      </a>
+      <nav class="header-actions" aria-label="Acesso ao SIGPM">
+        <button class="logout-button" id="logout-system" type="button" hidden>Sair</button>
+      </nav>
+    </header>
+
+    <main class="welcome-main">
+      <section class="postcard" aria-labelledby="welcome-title">
+        <div class="postcard-copy">
+          <div class="eyebrow"><span></span> Sistema de Gestão e Produtividade Municipal</div>
+          <h1 id="welcome-title">Bem-vindo ao SIGPM</h1>
+          <p class="welcome-description">Organização, produtividade e eficiência para a gestão pública municipal</p>
+          <div class="feature-list" aria-label="Recursos do SIGPM">
+            <span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-9"/></svg>Dashboard interativo</span>
+            <span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-9"/></svg>Tarefas e prazos</span>
+            <span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-9"/></svg>Documentos e secretarias</span>
+          </div>
+          <a class="enter-button" id="enter-system" href="/portal.html">
+            <span>Entrar no sistema</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+          </a>
+          <p class="auth-note">Você será direcionado ao painel se já estiver conectado ou ao login para entrar.</p>
+        </div>
+
+        <div class="postcard-art" role="img" aria-label="Ilustração de uma praça municipal e edifícios sob o céu azul">
+          <div class="art-sun"></div>
+          <div class="art-cloud cloud-one"></div><div class="art-cloud cloud-two"></div>
+          <div class="art-hill hill-back"></div><div class="art-hill hill-front"></div>
+          <div class="city-hall"><div class="hall-roof"></div><div class="hall-pediment"></div><div class="hall-columns"><i></i><i></i><i></i><i></i><i></i></div><div class="hall-base"></div></div>
+          <div class="city-block block-one"><i></i><i></i><i></i></div><div class="city-block block-two"><i></i><i></i><i></i></div>
+          <div class="art-tree tree-one"><i></i><b></b></div><div class="art-tree tree-two"><i></i><b></b></div>
+          <div class="art-plaza"><span>GESTÃO · CUIDADO · CIDADANIA</span></div>
+          <div class="postmark" aria-hidden="true"><span>SIGPM</span><i></i><i></i><i></i></div>
+          <div class="art-caption">Uma cidade que trabalha em conjunto</div>
+        </div>
+      </section>
+
+      <footer class="welcome-footer"><span>SIGPM | Sistema de Gestão e Produtividade Municipal</span></footer>
+    </main>
+  </div>
+</body>
+</html>

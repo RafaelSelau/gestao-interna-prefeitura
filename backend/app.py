@@ -204,6 +204,14 @@ def initialize(path: str | Path) -> None:
         document_columns = {row["name"] for row in db.execute("PRAGMA table_info(personal_documents)")}
         if "attention" not in document_columns:
             db.execute("ALTER TABLE personal_documents ADD COLUMN attention INTEGER NOT NULL DEFAULT 0")
+        if "department_id" not in document_columns:
+            db.execute("ALTER TABLE personal_documents ADD COLUMN department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL")
+        task_columns = {row["name"] for row in db.execute("PRAGMA table_info(personal_tasks)")}
+        if "department_id" not in task_columns:
+            db.execute("ALTER TABLE personal_tasks ADD COLUMN department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL")
+        department_columns = {row["name"] for row in db.execute("PRAGMA table_info(departments)")}
+        if "description" not in department_columns:
+            db.execute("ALTER TABLE departments ADD COLUMN description TEXT NOT NULL DEFAULT ''")
         db.execute("INSERT OR IGNORE INTO users(username,display_name,password_hash,role,active) VALUES('__portal_cidadao__','Portal do cidadão','disabled$no-login','consulta',0)")
         db.executescript("""
         CREATE INDEX IF NOT EXISTS idx_personal_tasks_owner_due ON personal_tasks(user_id,due_at);
@@ -288,12 +296,23 @@ class API:
                     body[key] = values[-1] if values else ""
             with database(self.db_path) as db:
                 if method == "GET" and path == "/api/health":
-                    return self.respond(start_response, 200, {"status": "ok", "service": "SIGPM API"})
+                    return self.respond(start_response, 200, {
+                        "status": "ok",
+                        "service": "SIGPM API",
+                        "apiVersion": "sigpm-dashboard-v1",
+                    })
                 if path.startswith("/api/public/"):
                     return self.public_dispatch(db, method, path, body, environ, start_response)
                 if method == "GET" and path == "/api/setup/status":
                     configured = bool(db.execute("SELECT 1 FROM users WHERE active=1 LIMIT 1").fetchone())
-                    return self.respond(start_response, 200, {"needsAdmin": not configured})
+                    demo_configured = bool(db.execute("""SELECT 1 FROM system_flags f
+                        WHERE f.flag='demo_seeded' AND f.value='complete' AND EXISTS (
+                          SELECT 1 FROM users u JOIN employee_profiles p ON p.user_id=u.id
+                          WHERE u.active=1 AND u.role='consulta' AND instr(u.username,'@')>1
+                            AND p.work_email=u.username
+                        ) LIMIT 1""").fetchone())
+                    return self.respond(start_response, 200, {"needsAdmin": not configured,
+                        "demoConfigured": demo_configured})
                 if method == "POST" and path == "/api/setup/admin":
                     if environ.get("REMOTE_ADDR") not in ("127.0.0.1", "::1"):
                         return self.respond(start_response, 403, {"error": "A configuração inicial só pode ser feita localmente."})
@@ -342,10 +361,16 @@ class API:
             return self.respond(start_response, 500, {"error": "Erro interno. Consulte os registros do servidor."})
 
     def static(self, environ, start_response):
-        rel = environ.get("PATH_INFO", "/").lstrip("/") or "index.html"
+        rel = environ.get("PATH_INFO", "/").lstrip("/") or "welcome.html"
+        target = (ROOT / rel).resolve()
+        if target == (ROOT / "produtividade.html").resolve():
+            with database(self.db_path) as db:
+                user, _ = self.authenticate(db, environ)
+            if not user:
+                start_response("302 Found", [("Location", "/portal.html"), ("Cache-Control", "no-store"), ("Content-Length", "0")])
+                return [b""]
         if rel.replace("\\", "/").lower().startswith("backend/"):
             return self.respond(start_response, 404, {"error": "Arquivo não encontrado."})
-        target = (ROOT / rel).resolve()
         private_root = (ROOT / "backend").resolve()
         if (ROOT not in target.parents and target != ROOT) or private_root in target.parents or target == private_root or not target.is_file():
             return self.respond(start_response, 404, {"error": "Arquivo não encontrado."})
@@ -489,6 +514,25 @@ class API:
                     return self.archive_document(db, document_id, user, start_response)
                 if len(parts) == 4 and parts[3] == "download" and method == "GET":
                     return self.download_document(db, document_id, user, start_response)
+        if path.startswith("/api/departments/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[2].isdigit():
+                department_id = int(parts[2])
+                if method == "GET":
+                    if not self.allowed(user, "departments:read"):
+                        return self.respond(start_response, 403, {"error": "Seu perfil não permite esta operação."})
+                    status, result = self.get_department(db, department_id, user, start_response)
+                    return self.respond(start_response, status, result)
+                if method in ("PUT", "PATCH"):
+                    if not self.allowed(user, "departments:write"):
+                        return self.respond(start_response, 403, {"error": "Seu perfil não permite esta operação."})
+                    status, result = self.update_department(db, department_id, body, user, start_response)
+                    return self.respond(start_response, status, result)
+                if method == "DELETE":
+                    if not self.allowed(user, "departments:write"):
+                        return self.respond(start_response, 403, {"error": "Seu perfil não permite esta operação."})
+                    status, result = self.delete_department(db, department_id, user, start_response)
+                    return self.respond(start_response, status, result)
         routes = {
             ("GET", "/api/departments"): ("departments:read", self.list_departments),
             ("POST", "/api/departments"): ("departments:write", self.create_department),
@@ -523,16 +567,65 @@ class API:
 
     @staticmethod
     def list_departments(db, body, user):
-        return 200, [dict(row) for row in db.execute("SELECT id,name,active,created_at FROM departments ORDER BY name")]
+        rows = db.execute("""SELECT d.id,d.name,d.description,d.active,d.created_at,
+            (SELECT COUNT(*) FROM personal_tasks t WHERE t.department_id=d.id AND t.user_id=? AND t.archived_at IS NULL) AS task_count,
+            (SELECT COUNT(*) FROM personal_documents x WHERE x.department_id=d.id AND x.user_id=? AND x.active=1) AS document_count
+            FROM departments d ORDER BY d.name""", (user["id"], user["id"]))
+        return 200, [dict(row) for row in rows]
 
     @staticmethod
     def create_department(db, body, user):
         name = str(body.get("name", "")).strip()
         if not name or len(name) > 120:
             raise ValueError("Informe o nome da secretaria (até 120 caracteres).")
-        cur = db.execute("INSERT INTO departments(name) VALUES(?)", (name,))
+        description = str(body.get("description") or "").strip()
+        if len(description) > 1000:
+            raise ValueError("A descrição deve ter até 1.000 caracteres.")
+        cur = db.execute("INSERT INTO departments(name,description) VALUES(?,?)", (name, description))
         record_audit(db, user["id"], "create", "department", cur.lastrowid, {"name": name})
-        return 201, {"id": cur.lastrowid, "name": name, "active": 1}
+        return 201, {"id": cur.lastrowid, "name": name, "description": description, "active": 1}
+
+    @staticmethod
+    def get_department(db, department_id, user, start_response):
+        row = db.execute("""SELECT d.id,d.name,d.description,d.active,d.created_at,
+            (SELECT COUNT(*) FROM personal_tasks t WHERE t.department_id=d.id AND t.user_id=? AND t.archived_at IS NULL) AS task_count,
+            (SELECT COUNT(*) FROM personal_documents x WHERE x.department_id=d.id AND x.user_id=? AND x.active=1) AS document_count
+            FROM departments d WHERE d.id=?""", (user["id"], user["id"], department_id)).fetchone()
+        if not row:
+            return 404, {"error": "Secretaria não encontrada."}
+        return 200, dict(row)
+
+    @staticmethod
+    def update_department(db, department_id, body, user, start_response):
+        current = db.execute("SELECT * FROM departments WHERE id=?", (department_id,)).fetchone()
+        if not current:
+            return 404, {"error": "Secretaria não encontrada."}
+        name = str(body.get("name", current["name"]) or "").strip()
+        description = str(body.get("description", current["description"]) or "").strip()
+        if not name or len(name) > 120 or len(description) > 1000:
+            raise ValueError("Informe um nome válido e uma descrição de até 1.000 caracteres.")
+        db.execute("UPDATE departments SET name=?,description=? WHERE id=?", (name, description, department_id))
+        record_audit(db, user["id"], "update", "department", department_id, {"name": name})
+        return API.get_department(db, department_id, user, start_response)
+
+    @staticmethod
+    def delete_department(db, department_id, user, start_response):
+        current = db.execute("SELECT name FROM departments WHERE id=?", (department_id,)).fetchone()
+        if not current:
+            return 404, {"error": "Secretaria não encontrada."}
+        references = {
+            "setores": db.execute("SELECT COUNT(*) FROM sectors WHERE department_id=?", (department_id,)).fetchone()[0],
+            "contas vinculadas": db.execute("SELECT COUNT(*) FROM user_units WHERE department_id=?", (department_id,)).fetchone()[0],
+            "demandas": db.execute("SELECT COUNT(*) FROM demands WHERE department_id=?", (department_id,)).fetchone()[0],
+            "tarefas": db.execute("SELECT COUNT(*) FROM personal_tasks WHERE department_id=?", (department_id,)).fetchone()[0],
+            "documentos": db.execute("SELECT COUNT(*) FROM personal_documents WHERE department_id=?", (department_id,)).fetchone()[0],
+        }
+        linked = [label for label, count in references.items() if count]
+        if linked:
+            return 409, {"error": "A secretaria possui vínculos e não pode ser excluída.", "references": linked}
+        db.execute("DELETE FROM departments WHERE id=?", (department_id,))
+        record_audit(db, user["id"], "delete", "department", department_id, {"name": current["name"]})
+        return 200, {"ok": True, "deleted": True}
 
     @staticmethod
     def list_sectors(db, body, user):
@@ -961,38 +1054,54 @@ class API:
             raise ValueError("Informe uma data válida para o painel.") from None
         counts = {row["status"]: row["total"] for row in db.execute(
             "SELECT status,COUNT(*) AS total FROM personal_tasks WHERE user_id=? AND archived_at IS NULL GROUP BY status", (user["id"],))}
+        total_tasks = db.execute("SELECT COUNT(*) FROM personal_tasks WHERE user_id=? AND archived_at IS NULL", (user["id"],)).fetchone()[0]
+        total_documents = db.execute("SELECT COUNT(*) FROM personal_documents WHERE user_id=? AND active=1", (user["id"],)).fetchone()[0]
+        total_departments = db.execute("SELECT COUNT(*) FROM departments WHERE active=1").fetchone()[0]
         due_open = db.execute("SELECT COUNT(*) FROM personal_tasks WHERE user_id=? AND archived_at IS NULL AND due_at IS NOT NULL AND substr(due_at,1,10)<substr(?,1,10) AND status NOT IN ('concluida','cancelada')", (user["id"], day)).fetchone()[0]
+        due_soon = db.execute("SELECT COUNT(*) FROM personal_tasks WHERE user_id=? AND archived_at IS NULL AND due_at IS NOT NULL AND substr(due_at,1,10)>=? AND substr(due_at,1,10)<=? AND status NOT IN ('concluida','cancelada')", (user["id"], day, (date.fromisoformat(day) + timedelta(days=7)).isoformat())).fetchone()[0]
         urgent = db.execute("SELECT COUNT(*) FROM personal_tasks WHERE user_id=? AND archived_at IS NULL AND priority='urgente' AND status IN ('aberta','em_andamento','aguardando')", (user["id"],)).fetchone()[0]
         next_action = db.execute("SELECT * FROM personal_tasks WHERE user_id=? AND archived_at IS NULL AND status IN ('aberta','em_andamento','aguardando') ORDER BY CASE priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,COALESCE(due_at,'9999'),created_at LIMIT 1", (user["id"],)).fetchone()
         today_tasks = [dict(row) for row in db.execute("SELECT * FROM personal_tasks WHERE user_id=? AND archived_at IS NULL AND substr(COALESCE(due_at,start_at,''),1,10)=? ORDER BY CASE priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,COALESCE(due_at,start_at),id", (user["id"], day))]
         today_events = [dict(row) for row in db.execute("SELECT * FROM work_events WHERE user_id=? AND status='agendada' AND substr(starts_at,1,10)=? ORDER BY starts_at", (user["id"], day))]
         upcoming = [dict(row) for row in db.execute("SELECT * FROM work_events WHERE user_id=? AND status='agendada' AND starts_at>=? ORDER BY starts_at LIMIT 5", (user["id"], day))]
-        recent_docs = [dict(row) for row in db.execute("SELECT id,title,category,original_name,created_at FROM personal_documents WHERE user_id=? AND active=1 ORDER BY id DESC LIMIT 5", (user["id"],))]
+        recent_docs = [dict(row) for row in db.execute("SELECT x.id,x.title,x.category,x.original_name,x.created_at,x.department_id,d.name AS department_name FROM personal_documents x LEFT JOIN departments d ON d.id=x.department_id WHERE x.user_id=? AND x.active=1 ORDER BY x.id DESC LIMIT 5", (user["id"],))]
+        recent_tasks = [dict(row) for row in db.execute("SELECT t.id,t.title,t.status,t.priority,t.due_at,t.created_at,t.department_id,d.name AS department_name FROM personal_tasks t LEFT JOIN departments d ON d.id=t.department_id WHERE t.user_id=? AND t.archived_at IS NULL ORDER BY t.created_at DESC LIMIT 8", (user["id"],))]
+        task_statuses = [{"status": status, "total": counts.get(status, 0)} for status in ("aberta", "em_andamento", "aguardando", "concluida", "cancelada")]
+        task_departments = [dict(row) for row in db.execute("SELECT d.id AS department_id,d.name,COUNT(t.id) AS total FROM departments d LEFT JOIN personal_tasks t ON t.department_id=d.id AND t.user_id=? AND t.archived_at IS NULL WHERE d.active=1 GROUP BY d.id,d.name ORDER BY d.name", (user["id"],))]
         activity = [dict(row) for row in db.execute("SELECT entity_type,entity_id,action,summary,happened_at FROM productivity_activity WHERE user_id=? ORDER BY id DESC LIMIT 12", (user["id"],))]
         routine = [{"kind": "task", **task} for task in today_tasks] + [{"kind": "event", **event} for event in today_events]
         routine.sort(key=lambda item: (str(item.get("due_at") or item.get("starts_at") or "9999"), 0 if item["kind"] == "event" else 1))
         return self.respond(start_response, 200, {"date": day, "counts": {"abertas": counts.get("aberta",0),
             "em_andamento": counts.get("em_andamento",0), "concluidas": counts.get("concluida",0),
-            "atrasadas": due_open, "urgentes": urgent}, "routine": routine,
+            "aguardando": counts.get("aguardando",0), "canceladas": counts.get("cancelada",0),
+            "atrasadas": due_open, "proximas": due_soon, "urgentes": urgent,
+            "total_tarefas": total_tasks, "total_documentos": total_documents, "total_secretarias": total_departments},
+            "taskStatuses": task_statuses, "tasksByDepartment": task_departments,
+            "recentTasks": recent_tasks, "routine": routine,
             "upcomingEvents": upcoming, "nextAction": dict(next_action) if next_action else None,
             "recentDocuments": recent_docs, "recentActivity": activity})
 
     def list_tasks(self, db, body, user, start_response):
-        clauses = ["user_id=?", "archived_at IS NULL"]; values = [user["id"]]
+        clauses = ["t.user_id=?", "t.archived_at IS NULL"]; values = [user["id"]]
+        if body.get("open") == "1": clauses.append("t.status NOT IN ('concluida','cancelada')")
         if body.get("status") in ("aberta","em_andamento","aguardando","concluida","cancelada"):
-            clauses.append("status=?"); values.append(body["status"])
+            clauses.append("t.status=?"); values.append(body["status"])
         if body.get("priority") in ("baixa","normal","alta","urgente"):
-            clauses.append("priority=?"); values.append(body["priority"])
+            clauses.append("t.priority=?"); values.append(body["priority"])
+        if body.get("departmentId"):
+            if not str(body["departmentId"]).isdigit():
+                raise ValueError("Secretaria inválida.")
+            clauses.append("t.department_id=?"); values.append(int(body["departmentId"]))
         if body.get("from"):
-            clauses.append("substr(COALESCE(due_at,start_at,''),1,10)>=?"); values.append(str(body["from"])[:10])
+            clauses.append("substr(COALESCE(t.due_at,t.start_at,''),1,10)>=?"); values.append(str(body["from"])[:10])
         if body.get("to"):
-            clauses.append("substr(COALESCE(due_at,start_at,''),1,10)<=?"); values.append(str(body["to"])[:10])
+            clauses.append("substr(COALESCE(t.due_at,t.start_at,''),1,10)<=?"); values.append(str(body["to"])[:10])
         if body.get("q"):
-            clauses.append("(title LIKE ? OR description LIKE ? OR category LIKE ? OR observations LIKE ?)"); values.extend([f"%{body['q']}%"]*4)
-        order = "CASE priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,COALESCE(due_at,'9999'),created_at DESC"
-        if body.get("sort") == "prazo": order = "COALESCE(due_at,'9999'),CASE priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END"
-        if body.get("sort") == "recentes": order = "created_at DESC"
-        rows = [dict(row) for row in db.execute(f"SELECT * FROM personal_tasks WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT 500", values)]
+            clauses.append("(t.title LIKE ? OR t.description LIKE ? OR t.category LIKE ? OR t.observations LIKE ?)"); values.extend([f"%{body['q']}%"]*4)
+        order = "CASE t.priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,COALESCE(t.due_at,'9999'),t.created_at DESC"
+        if body.get("sort") == "prazo": order = "COALESCE(t.due_at,'9999'),CASE t.priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END"
+        if body.get("sort") == "recentes": order = "t.created_at DESC"
+        rows = [dict(row) for row in db.execute(f"SELECT t.*,d.name AS department_name FROM personal_tasks t LEFT JOIN departments d ON d.id=t.department_id WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT 500", values)]
         return self.respond(start_response, 200, rows)
 
     def get_task(self, db, task_id, user, start_response):
@@ -1000,6 +1109,9 @@ class API:
         if not row or row["archived_at"]:
             return self.respond(start_response, 404, {"error": "Tarefa não encontrada."})
         data = dict(row)
+        if data.get("department_id"):
+            department = db.execute("SELECT name FROM departments WHERE id=?", (data["department_id"],)).fetchone()
+            data["department_name"] = department["name"] if department else None
         data["documents"] = [dict(item) for item in db.execute("SELECT id,title,category,original_name FROM personal_documents WHERE linked_task_id=? AND user_id=? AND active=1", (task_id,user["id"]))]
         return self.respond(start_response, 200, data)
 
@@ -1009,14 +1121,15 @@ class API:
             return self.respond(start_response, 404, {"error": "Tarefa não encontrada."})
         if method != "POST" and method in ("PUT","PATCH"):
             data = dict(current)
-            aliases = {"title":"title","description":"description","category":"category","startAt":"start_at","dueAt":"due_at","priority":"priority","status":"status","observations":"observations"}
+            aliases = {"title":"title","description":"description","category":"category","startAt":"start_at","dueAt":"due_at","priority":"priority","status":"status","observations":"observations","departmentId":"department_id"}
             for key, column in aliases.items():
                 if key in body: data[column] = body[key]
         else:
             data = {"title": body.get("title"), "description": body.get("description", ""),
                 "category": body.get("category", "Geral"), "start_at": body.get("startAt"),
                 "due_at": body.get("dueAt"), "priority": body.get("priority", "normal"),
-                "status": body.get("status", "aberta"), "observations": body.get("observations", "")}
+                "status": body.get("status", "aberta"), "observations": body.get("observations", ""),
+                "department_id": body.get("departmentId") or None}
         title = str(data.get("title") or "").strip(); description = str(data.get("description") or "").strip()
         category = str(data.get("category") or "Geral").strip(); observations = str(data.get("observations") or "").strip()
         priority, status = data.get("priority"), data.get("status")
@@ -1036,6 +1149,13 @@ class API:
                     raise ValueError("Datas e horários devem usar formato local Brasília AAAA-MM-DDTHH:MM.") from None
             dates[field] = value or None
         old_status = current["status"] if current else None
+        department_id = data.get("department_id")
+        if department_id not in (None, ""):
+            if not str(department_id).isdigit() or not db.execute("SELECT 1 FROM departments WHERE id=? AND active=1", (int(department_id),)).fetchone():
+                raise ValueError("Selecione uma secretaria cadastrada e ativa.")
+            department_id = int(department_id)
+        else:
+            department_id = None
         completed_at = current["completed_at"] if current else None
         if status == "concluida" and old_status != "concluida": completed_at = datetime.now().isoformat(timespec="seconds")
         if status != "concluida": completed_at = None
@@ -1045,14 +1165,14 @@ class API:
                 raise ValueError("A reunião de origem não pertence à sua conta.")
             source = int(source)
         if task_id:
-            db.execute("UPDATE personal_tasks SET title=?,description=?,category=?,start_at=?,due_at=?,priority=?,status=?,observations=?,source_event_id=?,completed_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
-                (title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,completed_at,task_id,user["id"]))
+            db.execute("UPDATE personal_tasks SET title=?,description=?,category=?,start_at=?,due_at=?,priority=?,status=?,observations=?,source_event_id=?,department_id=?,completed_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+                (title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,department_id,completed_at,task_id,user["id"]))
             action = "status" if old_status != status else "edit"
             db.execute("INSERT INTO personal_task_events(task_id,user_id,action,details) VALUES(?,?,?,?)", (task_id,user["id"],action,json.dumps({"from":old_status,"to":status},ensure_ascii=False)))
             self._activity(db,user["id"],"task",task_id,"edit",f"Tarefa atualizada: {title}")
         else:
-            cur = db.execute("INSERT INTO personal_tasks(user_id,title,description,category,start_at,due_at,priority,status,observations,source_event_id,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (user["id"],title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,completed_at))
+            cur = db.execute("INSERT INTO personal_tasks(user_id,title,description,category,start_at,due_at,priority,status,observations,source_event_id,department_id,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (user["id"],title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,department_id,completed_at))
             task_id = cur.lastrowid
             db.execute("INSERT INTO personal_task_events(task_id,user_id,action,details) VALUES(?,?,?,?)",(task_id,user["id"],"created","{}"))
             self._activity(db,user["id"],"task",task_id,"create",f"Tarefa criada: {title}")
@@ -1170,16 +1290,20 @@ class API:
         return self.respond(start_response,201,dict(self._personal_task(db,task_id,user["id"])))
 
     def list_documents(self,db,body,user,start_response):
-        clauses=["user_id=?","active=1"]; values=[user["id"]]
+        clauses=["x.user_id=?","x.active=1"]; values=[user["id"]]
         if body.get("q"):
-            clauses.append("(title LIKE ? OR description LIKE ? OR original_name LIKE ? OR tag LIKE ?)"); values.extend([f"%{body['q']}%"]*4)
+            clauses.append("(x.title LIKE ? OR x.description LIKE ? OR x.original_name LIKE ? OR x.tag LIKE ?)"); values.extend([f"%{body['q']}%"]*4)
         if body.get("category"):
-            clauses.append("category=?"); values.append(str(body["category"])[:80])
+            clauses.append("x.category=?"); values.append(str(body["category"])[:80])
+        if body.get("departmentId"):
+            if not str(body["departmentId"]).isdigit():
+                raise ValueError("Secretaria inválida.")
+            clauses.append("x.department_id=?"); values.append(int(body["departmentId"]))
         if body.get("from"):
-            clauses.append("substr(created_at,1,10)>=?"); values.append(str(body["from"])[:10])
+            clauses.append("substr(x.created_at,1,10)>=?"); values.append(str(body["from"])[:10])
         if body.get("to"):
-            clauses.append("substr(created_at,1,10)<=?"); values.append(str(body["to"])[:10])
-        rows=[self._document_public(dict(r)) for r in db.execute(f"SELECT * FROM personal_documents WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT 500",values)]
+            clauses.append("substr(x.created_at,1,10)<=?"); values.append(str(body["to"])[:10])
+        rows=[self._document_public(dict(r)) for r in db.execute(f"SELECT x.*,d.name AS department_name FROM personal_documents x LEFT JOIN departments d ON d.id=x.department_id WHERE {' AND '.join(clauses)} ORDER BY x.id DESC LIMIT 500",values)]
         return self.respond(start_response,200,rows)
 
     @staticmethod
@@ -1209,6 +1333,9 @@ class API:
             ".txt":b"\x00" not in raw,".csv":b"\x00" not in raw}
         if not signatures[ext]: raise ValueError("O conteúdo não corresponde ao formato de arquivo informado.")
         task_id=body.get("linkedTaskId") or None; event_id=body.get("linkedEventId") or None
+        department_id=body.get("departmentId") or None
+        if department_id and (not str(department_id).isdigit() or not db.execute("SELECT 1 FROM departments WHERE id=? AND active=1", (int(department_id),)).fetchone()):
+            raise ValueError("Selecione uma secretaria cadastrada e ativa.")
         if task_id and (not str(task_id).isdigit() or not self._personal_task(db,int(task_id),user["id"])): raise ValueError("A tarefa associada não pertence à sua conta.")
         if event_id and (not str(event_id).isdigit() or not self._work_event(db,int(event_id),user["id"])): raise ValueError("O evento associado não pertence à sua conta.")
         stored=uuid.uuid4().hex+ext; directory=self.db_path.parent/"private_files"/str(user["id"]); directory.mkdir(parents=True,exist_ok=True)
@@ -1216,32 +1343,36 @@ class API:
         file_path.write_bytes(raw)
         mime=mimetypes.guess_type(filename)[0] or "application/octet-stream"
         try:
-            cur=db.execute("INSERT INTO personal_documents(user_id,title,description,category,original_name,stored_name,mime_type,size_bytes,tag,linked_task_id,linked_event_id,attention) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (user["id"],title,str(body.get("description") or "")[:5000],category,filename,stored,mime,len(raw),str(body.get("tag") or "")[:120],int(task_id) if task_id else None,int(event_id) if event_id else None,int(bool(body.get("needsAttention")))))
+            cur=db.execute("INSERT INTO personal_documents(user_id,title,description,category,original_name,stored_name,mime_type,size_bytes,tag,linked_task_id,linked_event_id,attention,department_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (user["id"],title,str(body.get("description") or "")[:5000],category,filename,stored,mime,len(raw),str(body.get("tag") or "")[:120],int(task_id) if task_id else None,int(event_id) if event_id else None,int(bool(body.get("needsAttention"))),int(department_id) if department_id else None))
         except Exception:
             file_path.unlink(missing_ok=True); raise
         document_id=cur.lastrowid
         self._activity(db,user["id"],"document",document_id,"create",f"Documento adicionado: {title}")
         record_audit(db,user["id"],"create_document","personal_document",document_id,{"size":len(raw),"category":category})
-        return self.respond(start_response,201,self._document_public(dict(db.execute("SELECT * FROM personal_documents WHERE id=?",(document_id,)).fetchone())))
+        row=db.execute("SELECT x.*,d.name AS department_name FROM personal_documents x LEFT JOIN departments d ON d.id=x.department_id WHERE x.id=? AND x.user_id=?",(document_id,user["id"])).fetchone()
+        return self.respond(start_response,201,self._document_public(dict(row)))
 
     def get_document(self,db,document_id,user,start_response):
-        row=db.execute("SELECT * FROM personal_documents WHERE id=? AND user_id=? AND active=1",(document_id,user["id"])).fetchone()
+        row=db.execute("SELECT x.*,d.name AS department_name FROM personal_documents x LEFT JOIN departments d ON d.id=x.department_id WHERE x.id=? AND x.user_id=? AND x.active=1",(document_id,user["id"])).fetchone()
         if not row: return self.respond(start_response,404,{"error":"Documento não encontrado."})
         return self.respond(start_response,200,self._document_public(dict(row)))
 
     def update_document(self,db,document_id,body,user,start_response):
-        row=db.execute("SELECT * FROM personal_documents WHERE id=? AND user_id=? AND active=1",(document_id,user["id"])).fetchone()
+        row=db.execute("SELECT x.*,d.name AS department_name FROM personal_documents x LEFT JOIN departments d ON d.id=x.department_id WHERE x.id=? AND x.user_id=? AND x.active=1",(document_id,user["id"])).fetchone()
         if not row: return self.respond(start_response,404,{"error":"Documento não encontrado."})
         title=str(body.get("title",row["title"]) or "").strip(); category=body.get("category",row["category"])
         if not title or len(title)>180 or category not in ("administrativo","oficio","memorando","relatorio","ata","formulario","portaria","referencia","outros"):
             raise ValueError("Título ou categoria inválidos.")
         task_id=body.get("linkedTaskId",row["linked_task_id"]) or None; event_id=body.get("linkedEventId",row["linked_event_id"]) or None
+        department_id=body.get("departmentId",row["department_id"]) or None
+        if department_id and (not str(department_id).isdigit() or not db.execute("SELECT 1 FROM departments WHERE id=? AND active=1", (int(department_id),)).fetchone()):
+            raise ValueError("Selecione uma secretaria cadastrada e ativa.")
         if task_id and (not str(task_id).isdigit() or not self._personal_task(db,int(task_id),user["id"])): raise ValueError("A tarefa associada não pertence à sua conta.")
         if event_id and (not str(event_id).isdigit() or not self._work_event(db,int(event_id),user["id"])): raise ValueError("O evento associado não pertence à sua conta.")
         description=str(body.get("description",row["description"]) or "")[:5000]; tag=str(body.get("tag",row["tag"]) or "")[:120]
         attention=int(bool(body.get("needsAttention",row["attention"])))
-        db.execute("UPDATE personal_documents SET title=?,description=?,category=?,tag=?,linked_task_id=?,linked_event_id=?,attention=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",(title,description,category,tag,int(task_id) if task_id else None,int(event_id) if event_id else None,attention,document_id,user["id"]))
+        db.execute("UPDATE personal_documents SET title=?,description=?,category=?,tag=?,linked_task_id=?,linked_event_id=?,attention=?,department_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",(title,description,category,tag,int(task_id) if task_id else None,int(event_id) if event_id else None,attention,int(department_id) if department_id else None,document_id,user["id"]))
         self._activity(db,user["id"],"document",document_id,"edit",f"Documento atualizado: {title}")
         record_audit(db,user["id"],"update_document","personal_document",document_id)
         return self.get_document(db,document_id,user,start_response)
@@ -1360,3 +1491,30 @@ def bootstrap_admin(path: str | Path, username: str, name: str, password: str,
         db.execute("INSERT OR IGNORE INTO system_flags(flag,value) VALUES('initial_admin','complete')")
         record_audit(db, cur.lastrowid, "bootstrap_admin", "user", cur.lastrowid, {"username": username})
 
+
+def bootstrap_demo(path: str | Path, gestor_password: str, consulta_password: str,
+                   consulta_username: str) -> None:
+    """Prepare an isolated demo database without modifying an existing installation."""
+    if len(gestor_password) < 12 or len(consulta_password) < 12:
+        raise ValueError("As senhas de demonstração devem ter ao menos 12 caracteres.")
+    if not consulta_username or "@" not in consulta_username or len(consulta_username) > 80 or any(char.isspace() for char in consulta_username):
+        raise ValueError("Configure um e-mail autorizado válido para a conta de consulta da demonstração.")
+    initialize(path)
+    with database(path) as db:
+        if db.execute("SELECT 1 FROM system_flags WHERE flag='demo_seeded'").fetchone():
+            raise ValueError("Esta base de demonstração já foi preparada; nenhuma conta foi alterada.")
+        if db.execute("SELECT 1 FROM users WHERE active=1 LIMIT 1").fetchone():
+            raise ValueError("A base escolhida já contém usuários. Use um arquivo SQLite exclusivo para demonstração.")
+        dep = db.execute("INSERT INTO departments(name) VALUES('Secretaria Demonstrativa')").lastrowid
+        gestor = db.execute("INSERT INTO users(username,display_name,password_hash,role) VALUES(?,?,?,'gestor')",
+                            ("demo.gestor", "Ana Lima · Demonstração", password_hash(gestor_password))).lastrowid
+        consulta = db.execute("INSERT INTO users(username,display_name,password_hash,role) VALUES(?,?,?,'consulta')",
+                              (consulta_username, "Bruno Alves · Demonstração", password_hash(consulta_password))).lastrowid
+        db.executemany("INSERT INTO user_units(user_id,department_id) VALUES(?,?)", [(gestor, dep), (consulta, dep)])
+        db.execute("INSERT INTO employee_profiles(user_id,work_email) VALUES(?,?)", (consulta, consulta_username))
+        demand_id = db.execute("INSERT INTO demands(protocol,title,description,category,department_id,requester_type,requester_name,priority,status,created_by) VALUES(?,?,?,?,?,'cidadao',?,'alta','aberta',?)",
+                               ("DEMO-2026-0001", "Iluminação pública na Praça das Palmeiras",
+                                "Registro fictício para apresentação acadêmica. Nenhum dado pessoal real.",
+                                "Iluminação pública", dep, "Mariana Costa (personagem fictícia)", gestor)).lastrowid
+        record_audit(db, gestor, "create", "demand", demand_id, {"source": "demo_seed"})
+        db.execute("INSERT INTO system_flags(flag,value) VALUES('demo_seeded','complete')")

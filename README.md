@@ -1,4 +1,4 @@
-# SIGAM / SIGPM — protótipo e API de gestão administrativa municipal
+# SIGPM — Sistema de Gestão e Produtividade Municipal
 
 ## Executar localmente
 
@@ -8,15 +8,34 @@ Python 3.10 ou superior não exige pacotes extras. Inicie o servidor integrado p
 py backend/server.py --host 127.0.0.1 --port 8001
 ```
 
-Abra `http://127.0.0.1:8001/portal.html`. Na primeira abertura, um assistente local cria o administrador municipal uma única vez e oferece uma lista editável de secretarias iniciais, para que o formulário de demandas já tenha destinos válidos. Confira os nomes oficiais antes de concluir. Instalações já configuradas sem secretarias podem criá-las em **Unidades e acessos**; ao tentar abrir uma demanda, o sistema mostra esse caminho em vez de deixar um campo vazio. Após o login, use **Minha rotina** ou abra `/produtividade.html` para acessar o organizador pessoal. Para acessar a interface SIGAM original, abra `/`. Se a porta estiver ocupada, escolha outra porta e use-a em ambos os endereços. Para encerrar, pressione **Ctrl+C**. O banco SQLite é criado em `backend/sigpm.sqlite3`; não publique esse arquivo.
+Abra `http://127.0.0.1:8001/` para a tela institucional do SIGPM e selecione **Entrar no sistema**. O login (ou a configuração inicial local, se ainda não houver administrador) fica em `/portal.html`. Após autenticar, o sistema abre o dashboard em `/produtividade.html`. O menu principal contém apenas **Dashboard**, **Tarefas**, **Documentos**, **Secretarias** e **Sair da conta**. `/index.html` redireciona para a aplicação autenticada e exige sessão. Se a porta estiver ocupada, escolha outra porta e use-a nos endereços. Para encerrar, pressione **Ctrl+C**. O banco SQLite é criado em `backend/sigpm.sqlite3`; não publique esse arquivo.
 
-Para a prévia antiga, isolada e sem API, ainda é possível usar `py -m http.server 8000 --bind 127.0.0.1`. Ela mantém os limites de demonstração descritos abaixo e não deve ser usada para acessar o Portal Interno.
+Se uma instância antiga do servidor já estiver usando a porta `8001`, pare-a com **Ctrl+C** no terminal dela e execute novamente o comando acima. O painel verifica a versão da API e mostra essa orientação se as rotas atuais de tarefas, dashboard e secretarias não estiverem disponíveis.
 
-Rotas principais: `GET/PUT /api/profile`, `GET /api/dashboard`, `GET/POST/PUT /api/tasks`, `GET/POST/PUT /api/events`, `GET/POST/PUT /api/documents`, `GET /api/search`, `GET/PUT /api/plan`, `GET /api/notifications` e `/preferences`; além das rotas de sessão, unidades, demandas e portal do cidadão descritas abaixo. Login retorna cookie de sessão HttpOnly e token CSRF. Operações internas de escrita exigem o token no cabeçalho `X-CSRF-Token`.
+As páginas internas exigem uma sessão válida no servidor integrado. O sistema não usa `localStorage` para tarefas, documentos ou dados de dashboard.
 
-Para abrir a tela de trabalho da equipe, acesse `http://127.0.0.1:8001/portal.html` (ou use a porta configurada). O administrador precisa criar contas associadas a uma unidade para que gestores e atendentes vejam a fila da própria secretaria. A configuração inicial cria secretarias editáveis; instalações antigas podem cadastrar as unidades na tela **Unidades e acessos**.
+Rotas principais do painel: `GET /api/dashboard`, CRUD de `/api/tasks`, `/api/documents` e `/api/departments`. Login retorna cookie de sessão HttpOnly e token CSRF. Operações internas de escrita exigem o token no cabeçalho `X-CSRF-Token`. Outras rotas e tabelas antigas permanecem no backend para compatibilidade e preservação dos registros existentes.
+
+O administrador inicial é criado pelo formulário local de `/portal.html` ou pelo comando `--create-admin`. A tela de Secretarias permite cadastro, edição e exclusão para administradores. Uma secretaria só pode ser excluída se não tiver vínculos com setores, usuários, demandas, tarefas ou documentos.
 
 Os testes da API rodam com `py -m unittest discover -s backend/tests -t . -v`.
+
+### Preparar ambiente para apresentação
+
+A conta de demonstração é autenticada pelo backend e deve ficar em uma base SQLite isolada. Configure `SIGPM_DEMO_EMAIL` com o e-mail autorizado para a demonstração e prepare uma base nova:
+
+```powershell
+$env:SIGPM_DEMO_EMAIL = "seu-email-autorizado@municipio.gov.br"
+py backend/server.py --create-demo --demo-db backend/sigpm-demo-apresentacao.sqlite3
+```
+
+Use o e-mail autorizado como nome de usuário. O comando pede senhas de pelo menos 12 caracteres sem exibi-las e cria a conta desse e-mail com perfil de consulta, mais uma conta fictícia de gestor e dados fictícios. O arquivo isolado não altera `backend/sigpm.sqlite3`, o administrador ou suas permissões. Para iniciar a API da demonstração, em outro terminal execute:
+
+```powershell
+py backend/server.py --host 127.0.0.1 --port 8002 --db backend/sigpm-demo-apresentacao.sqlite3
+```
+
+Abra `http://127.0.0.1:8002/portal.html` e entre com o e-mail autorizado e a senha de consulta que você definiu. `--create-admin` continua sendo o fluxo independente para o administrador inicial. A base de demonstração é separada da base padrão `backend/sigpm.sqlite3`. Use apenas dados fictícios e não exponha essas contas em uma implantação pública.
 
 ## O que está implementado
 
@@ -25,40 +44,29 @@ Os testes da API rodam com `py -m unittest discover -s backend/tests -t . -v`.
 - Papéis básicos (administrador, gestor, atendente e consulta), com autorização validada no backend.
 - Registro de auditoria encadeado por hash para autenticações e alterações da API. O encadeamento torna alterações detectáveis, mas não é armazenamento imutável contra um administrador do arquivo/servidor.
 - Testes automatizados da API para autenticação, permissões, CSRF, persistência, cadastros relacionados e auditoria.
-- Portal Interno em `/portal.html`, conectado à API: demandas com protocolo sequencial, fila e pesquisa, atribuição a si, providências, status, encaminhamento, solução, encerramento e reabertura justificada.
-- Escopo de demandas aplicado no backend por secretaria e, quando atribuído, setor. Administrador tem visão consolidada; gestor, atendente e consulta precisam de vínculo de unidade.
-- Portal do cidadão em `/cidadao.html`: abertura, protocolo único, chave privada exibida uma única vez, acompanhamento pela chave e envio de informação complementar sem expor mensagens internas.
-- Portal pessoal em `/produtividade.html`: perfil profissional, painel calculado para a conta autenticada, tarefas privadas (filtros por status/prioridade/período, lista/Kanban, histórico, prazo e conclusão), agenda mensal/semanal/diária/lista, reuniões e atas com tarefas vinculadas, planejamento pessoal, pesquisa global e notificações internas com preferências.
-- Documentos pessoais persistidos no servidor: upload de até 8 MB, formatos limitados, metadados editáveis, etiquetas, associação com tarefas/reuniões, filtros por categoria/data, arquivamento e download autenticado restrito ao proprietário. Os arquivos ficam fora da pasta pública.
-- Os registros de produtividade são privados por funcionário; cargo e setor no perfil não concedem permissões. A agenda usa horário local de Brasília e mostra sobreposições de eventos.
-
-- Painel administrativo com contadores calculados dos registros internos criados.
-- Indicadores do painel abrem listas filtradas; busca global abre o primeiro resultado com Enter.
-- Alertas locais para tarefas e documentos vencidos ou com prazo nos próximos sete dias, com opção de marcar como lidos.
-- Preferência para recolher o menu salva neste navegador e atalho de sessão que informa claramente que não existe login.
-- Documentos: cadastro, metadados, anexo local limitado a 1 MB, pesquisa, filtros, exportação CSV, encaminhamento entre secretarias e histórico de movimentação.
-- Tarefas: cadastro, edição, responsáveis, secretaria/setor, prazo, prioridade, vínculo opcional a documento, filtros, exportação, histórico de atualização, conclusão registrada, e visualizações em lista, quadro Kanban e calendário mensal.
-- Detalhes de solicitações de serviço em janela integrada; filtros de categoria e botão para limpar filtros.
-- Pesquisa global de documentos e tarefas. Registros marcados como “restritos” são omitidos dessa busca, mas o protótipo não aplica permissões de segurança.
-- Módulos de demonstração já existentes: cidadãos, serviços municipais, ouvidoria de consulta, obras, secretarias de consulta e financeiro.
-- As gravações locais dos módulos mantêm os dados anteriores se o navegador recusar a gravação. A interface usa tipografia do sistema e evita dependência de fontes externas.
+- Dashboard autenticado com contadores reais de tarefas, documentos e secretarias, vencimentos próximos, atividade recente e gráficos clicáveis por status/secretaria.
+- Tarefas privadas por conta: cadastro, consulta detalhada, edição, conclusão/reabertura, arquivamento com confirmação e filtros por título, status, prioridade, período e secretaria.
+- Documentos privados por conta: upload real até 8 MB, categorias, edição de metadados, filtro, associação opcional a secretaria, download autenticado e arquivamento.
+- Secretarias: cadastro, detalhes, pesquisa e edição administrativa; exclusão bloqueada enquanto houver dados vinculados.
+- Login, logout, validação de sessão e permissões permanecem no backend. O painel é responsivo e não usa dados fictícios nem armazenamento local.
+- `/cidadao.html` e suas rotas públicas continuam preservados como página separada, sem link no menu principal. Os módulos demonstrativos antigos e o shell `localStorage` foram removidos do fluxo e seus arquivos JavaScript/CSS sem dependências foram apagados; tabelas e registros antigos do SQLite foram preservados.
+- As rotas de eventos, planejamento, notificações e demandas continuam disponíveis no backend por compatibilidade com relações e dados existentes; elas não aparecem na navegação principal.
 
 ## Limites importantes
 
-Os módulos antigos da interface continuam usando `localStorage`; ainda não foram migrados para a API e não compartilham registros com o Portal Interno. A API é uma base de desenvolvimento local, não uma implantação segura de produção: faltam administração e revogação de sessões completas, limite de tentativas de login, HTTPS/proxy/segredos institucionais, backups testados, política de retenção, auditoria externa e avaliação de segurança. O escopo por unidade existe para demandas, mas ainda não está implementado em todos os módulos. O nível “restrito” da interface antiga é só informativo. **Não use documentos sigilosos nem dados pessoais reais.**
+O servidor foi preparado para desenvolvimento local e não substitui implantação segura de produção: ainda são necessárias revisão de segurança, HTTPS/proxy, gestão institucional de segredos e sessões, backups testados, política de retenção e avaliação de segurança. As tarefas e documentos do painel são privados por funcionário; a secretaria é uma associação informativa e não altera permissões. **Não use documentos sigilosos nem dados pessoais reais.**
 
-O serviço integrado serve a interface antiga, os portais autenticados e o portal do cidadão. As telas antigas ainda precisam trocar o `localStorage` pela API. A produtividade atual não permite compartilhamento de documentos entre funcionários nem foto de perfil; os arquivos são privados do proprietário. Notificações são internas, sem e-mail/SMS/push. O limitador de tentativas do portal público é em memória para desenvolvimento. O servidor local não substitui revisão de segurança, backups, HTTPS, governança de acesso e política institucional para implantação real.
+O serviço integrado serve o painel autenticado e o portal do cidadão. Documentos são privados do proprietário, sem compartilhamento entre funcionários. Os módulos antigos de agenda e notificações permanecem apenas no backend para compatibilidade; não fazem parte da navegação simplificada. O limitador de tentativas do portal público é em memória para desenvolvimento. O servidor local não substitui revisão de segurança, backups, HTTPS, governança de acesso e política institucional para implantação real.
 
 ## Plano incremental SIGPM
 
 1. **Base (parcial):** API, sessão, papéis básicos, unidades, cadastro de pessoas e trilha de auditoria; faltam administração completa, revogação e gestão detalhada de permissões.
-2. **Atendimento (parcial):** Central interna e portal inicial do cidadão com protocolo, acompanhamento pela chave e resposta a pedidos de informação; a agenda pessoal, tarefas e arquivos privados foram acrescentados; faltam compartilhamento de documentos, foto de perfil, integrações externas e migração dos módulos antigos.
+2. **Gestão interna (parcial):** Dashboard, tarefas, documentos e secretarias autenticados; persistem limitações de compartilhamento de arquivos e administração institucional completa. O Portal do Cidadão permanece como página separada.
 3. **Tributos e alvarás:** somente após parametrização e validação das regras municipais.
 4. **Administração:** RH, jurídico, junta militar, compras, almoxarifado e patrimônio, com áreas restritas próprias.
 5. **Finanças e contratação:** licitações, contratos, contabilidade, orçamento e obras.
 6. **Áreas finalísticas:** saúde, educação, assistência social, ouvidoria e transparência, condicionadas à governança de dados.
 7. **Qualidade:** testes de segurança, desempenho e aceitação institucional para cada fase.
 
-Os demais módulos contêm dados de exemplo, alguns com datas de 2024. Chart.js continua sendo carregado por CDN; sem conexão, a navegação básica funciona, mas gráficos podem mostrar um aviso de biblioteca indisponível. O comportamento visual em navegador real e a exportação/download de arquivos ainda precisam ser conferidos no navegador do usuário.
-#   g e s t a o - i n t e r n a - p r e f e i t u r a  
- 
+Os gráficos do dashboard são desenhados com HTML/CSS a partir da resposta da API, sem dependência de CDN. A responsividade foi revisada no CSS; a inspeção em navegador dos fluxos autenticados desta versão ainda precisa ser concluída.
+#
