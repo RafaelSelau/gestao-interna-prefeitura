@@ -11,16 +11,30 @@ import json
 import base64
 import mimetypes
 import os
+import re
 import secrets
 import sqlite3
 import time
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta
 from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote
+
+try:
+    from backend.database import PostgresConnection
+except ImportError:  # local `python backend/server.py` entry point
+    from database import PostgresConnection
+
+try:
+    from psycopg import IntegrityError as PostgresIntegrityError
+except ImportError:
+    PostgresIntegrityError = sqlite3.IntegrityError
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "sigpm.sqlite3"
@@ -58,7 +72,10 @@ STATUS_TRANSITIONS = {
 }
 
 
-def connect(path: str | Path) -> sqlite3.Connection:
+def connect(path: str | Path):
+    dsn = os.environ.get("DATABASE_URL")
+    if dsn:
+        return PostgresConnection(dsn)
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
@@ -79,10 +96,15 @@ def database(path: str | Path):
 
 
 def initialize(path: str | Path) -> None:
+    # Production schema is applied through versioned Supabase migrations.
+    if os.environ.get("DATABASE_URL"):
+        with database(path) as db:
+            db.execute("SELECT auth_user_id FROM public.users LIMIT 0")
+        return
     with database(path) as db:
         db.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-          id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
+          id INTEGER PRIMARY KEY, auth_user_id TEXT UNIQUE, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
           password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','gestor','atendente','consulta')),
           active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -199,6 +221,9 @@ def initialize(path: str | Path) -> None:
         );
         """)
         demand_columns = {row["name"] for row in db.execute("PRAGMA table_info(demands)")}
+        user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+        if "auth_user_id" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN auth_user_id TEXT")
         if "citizen_token_hash" not in demand_columns:
             db.execute("ALTER TABLE demands ADD COLUMN citizen_token_hash TEXT")
         document_columns = {row["name"] for row in db.execute("PRAGMA table_info(personal_documents)")}
@@ -280,8 +305,9 @@ def initial_department_names(value: Any = None) -> list[str]:
 
 class API:
     def __init__(self, db_path: str | Path = DEFAULT_DB):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path = None if "://" in str(db_path) else Path(db_path)
+        if self.db_path:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.public_attempts: dict[str, list[float]] = {}
         initialize(self.db_path)
 
@@ -300,6 +326,7 @@ class API:
                         "status": "ok",
                         "service": "SIGPM API",
                         "apiVersion": "sigpm-dashboard-v1",
+                        "storageMode": "supabase" if not self.db_path else "local",
                     })
                 if path.startswith("/api/public/"):
                     return self.public_dispatch(db, method, path, body, environ, start_response)
@@ -312,7 +339,7 @@ class API:
                             AND p.work_email=u.username
                         ) LIMIT 1""").fetchone())
                     return self.respond(start_response, 200, {"needsAdmin": not configured,
-                        "demoConfigured": demo_configured})
+                        "demoConfigured": demo_configured, "remoteSetupAllowed": bool(self.db_path)})
                 if method == "POST" and path == "/api/setup/admin":
                     if environ.get("REMOTE_ADDR") not in ("127.0.0.1", "::1"):
                         return self.respond(start_response, 403, {"error": "A configuração inicial só pode ser feita localmente."})
@@ -325,8 +352,9 @@ class API:
                     claim = db.execute("INSERT OR IGNORE INTO system_flags(flag,value) SELECT 'initial_admin','complete' WHERE NOT EXISTS (SELECT 1 FROM users WHERE active=1)")
                     if claim.rowcount != 1:
                         return self.respond(start_response, 409, {"error": "O administrador inicial já foi criado."})
-                    cur = db.execute("INSERT INTO users(username,display_name,password_hash,role) VALUES(?,?,?,'admin')",
-                                     (username, name, password_hash(password)))
+                    auth_user_id = self.create_auth_user(username, password, name) if not self.db_path else None
+                    cur = db.execute("INSERT INTO users(username,display_name,password_hash,role,auth_user_id) VALUES(?,?,?,'admin',?)",
+                                     (username, name, "supabase-auth" if auth_user_id else password_hash(password), auth_user_id))
                     for department in departments:
                         department_cur = db.execute("INSERT INTO departments(name) VALUES(?)", (department,))
                         record_audit(db, cur.lastrowid, "create", "department", department_cur.lastrowid,
@@ -339,6 +367,8 @@ class API:
                 user, csrf = self.authenticate(db, environ)
                 if not user:
                     return self.respond(start_response, 401, {"error": "Autenticação necessária."})
+                if hasattr(db, "activate_user"):
+                    db.activate_user(user["auth_user_id"])
                 if method == "GET" and path == "/api/me":
                     return self.respond(start_response, 200, {"id": user["id"], "username": user["username"],
                         "name": user["display_name"], "role": user["role"], "departmentId": user["department_id"],
@@ -355,7 +385,7 @@ class API:
             return self.respond(start_response, 400, {"error": str(error)})
         except PermissionError as error:
             return self.respond(start_response, 403, {"error": str(error)})
-        except sqlite3.IntegrityError as error:
+        except (sqlite3.IntegrityError, PostgresIntegrityError) as error:
             return self.respond(start_response, 409, {"error": "Conflito de dados: verifique duplicidade e vínculos.", "detail": str(error)})
         except Exception:
             return self.respond(start_response, 500, {"error": "Erro interno. Consulte os registros do servidor."})
@@ -403,7 +433,7 @@ class API:
     @staticmethod
     def cookie(value, age=SESSION_SECONDS):
         # Secure é obrigatório quando implantado atrás de HTTPS; desenvolvimento usa loopback HTTP.
-        secure = "; Secure" if os.environ.get("SIGPM_HTTPS") == "1" else ""
+        secure = "; Secure" if os.environ.get("SIGPM_HTTPS") == "1" or os.environ.get("VERCEL") == "1" else ""
         return f"sigpm_session={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={age}{secure}"
 
     @staticmethod
@@ -425,7 +455,38 @@ class API:
     def login(self, db, environ, body, start_response):
         username, password = str(body.get("username", "")).strip(), str(body.get("password", ""))
         row = db.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
-        if not row or not password_matches(password, row["password_hash"]):
+        if self.db_path:
+            authenticated_id = row["auth_user_id"] if row else None
+            valid_password = bool(row and password_matches(password, row["password_hash"]))
+        else:
+            valid_password = False
+            authenticated_id = None
+            if row and "@" in username:
+                try:
+                    authenticated_id = self.authenticate_supabase_user(username, password)
+                    if authenticated_id and not row["auth_user_id"]:
+                        db.execute("UPDATE users SET auth_user_id=?,password_hash='supabase-auth' WHERE id=?",
+                                   (authenticated_id, row["id"]))
+                        valid_password = True
+                    else:
+                        valid_password = bool(authenticated_id and authenticated_id == row["auth_user_id"])
+                except ValueError:
+                    # Existing SQLite accounts use scrypt, which Supabase Auth cannot
+                    # import. Verify once locally, then move the password to Supabase Auth.
+                    if password_matches(password, row["password_hash"]):
+                        if row["auth_user_id"]:
+                            self.supabase_auth_request(
+                                f"admin/users/{row['auth_user_id']}", {"password": password},
+                                admin=True, method="PUT")
+                            authenticated_id = row["auth_user_id"]
+                        else:
+                            authenticated_id = self.create_auth_user(username, password, row["display_name"])
+                            db.execute("UPDATE users SET auth_user_id=?,password_hash='supabase-auth' WHERE id=?",
+                                       (authenticated_id, row["id"]))
+                        valid_password = True
+                except RuntimeError:
+                    valid_password = False
+        if not row or not valid_password:
             record_audit(db, None, "login_failed", "session", details={"username": username[:80]})
             return self.respond(start_response, 401, {"error": "Usuário ou senha inválidos."})
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
@@ -438,6 +499,39 @@ class API:
             "name": row["display_name"], "role": row["role"], "departmentId": unit["department_id"] if unit else None,
             "sectorId": unit["sector_id"] if unit else None, "csrfToken": csrf},
             [("Set-Cookie", self.cookie(token))])
+
+    def supabase_auth_request(self, path, payload, admin=False, method="POST"):
+        base = os.environ["SUPABASE_URL"].rstrip("/")
+        service_key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        public_key = os.environ["SUPABASE_ANON_KEY"]
+        key = service_key if admin else public_key
+        request = urllib.request.Request(
+            f"{base}/auth/v1/{path}", data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "apikey": key,
+                     "Authorization": f"Bearer {key}"}, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            if not admin and error.code in (400, 401, 422):
+                raise ValueError("Credenciais inválidas.") from None
+            detail = error.read(400).decode("utf-8", "replace")
+            raise RuntimeError(f"O Supabase Auth recusou a operação (HTTP {error.code}). {detail}") from error
+
+    def create_auth_user(self, email, password, display_name):
+        if "@" not in email or len(email) > 254:
+            raise ValueError("O usuário deve ser um e-mail válido para usar o Supabase Auth.")
+        result = self.supabase_auth_request("admin/users", {
+            "email": email, "password": password, "email_confirm": True,
+            "user_metadata": {"display_name": display_name},
+        }, admin=True)
+        return result["id"]
+
+    def authenticate_supabase_user(self, email, password):
+        result = self.supabase_auth_request(
+            "token?grant_type=password", {"email": email, "password": password})
+        user = result.get("user") or {}
+        return user.get("id")
 
     @staticmethod
     def allowed(user, permission):
@@ -502,6 +596,8 @@ class API:
                 return self.list_documents(db, body, user, start_response)
             if method == "POST":
                 return self.create_document(db, body, user, start_response)
+        if path == "/api/documents/upload-url" and method == "POST":
+            return self.create_document_upload_url(body, user, start_response)
         if path.startswith("/api/documents/"):
             parts = path.strip("/").split("/")
             if len(parts) >= 3 and parts[2].isdigit():
@@ -665,12 +761,11 @@ class API:
         record_audit(db, user["id"], "create", "person", cur.lastrowid, {"kind": kind, "name": name})
         return 201, {"id": cur.lastrowid, "kind": kind, "name": name, "document": document}
 
-    @staticmethod
-    def create_user(db, body, user):
+    def create_user(self, db, body, user):
         username, name = str(body.get("username", "")).strip(), str(body.get("name", "")).strip()
         password, role = str(body.get("password", "")), body.get("role")
-        if not username or len(username) > 80 or not name or len(name) > 180:
-            raise ValueError("Informe usuário e nome válidos.")
+        if not username or len(username) > (80 if self.db_path else 254) or (not self.db_path and "@" not in username) or not name or len(name) > 180:
+            raise ValueError("Informe um e-mail e nome válidos para criar o usuário.")
         if role not in ROLES or len(password) < 12:
             raise ValueError("Perfil inválido ou senha menor que 12 caracteres.")
         department_id, sector_id = body.get("departmentId"), body.get("sectorId")
@@ -684,8 +779,9 @@ class API:
             raise ValueError("Informe também a secretaria vinculada ao setor.")
         if sector_id and not db.execute("SELECT 1 FROM sectors WHERE id=? AND department_id=?", (int(sector_id), int(department_id))).fetchone():
             raise ValueError("O setor informado não pertence à secretaria escolhida.")
-        cur = db.execute("INSERT INTO users(username,display_name,password_hash,role) VALUES(?,?,?,?)",
-                         (username, name, password_hash(password), role))
+        auth_user_id = self.create_auth_user(username, password, name) if not self.db_path else None
+        cur = db.execute("INSERT INTO users(username,display_name,password_hash,role,auth_user_id) VALUES(?,?,?,?,?)",
+                         (username, name, "supabase-auth" if auth_user_id else password_hash(password), role, auth_user_id))
         if department_id:
             db.execute("INSERT INTO user_units(user_id,department_id,sector_id) VALUES(?,?,?)",
                        (cur.lastrowid, int(department_id), int(sector_id) if sector_id else None))
@@ -1312,6 +1408,44 @@ class API:
         row["download_url"]=f"/api/documents/{row['id']}/download"
         return row
 
+    def create_document_upload_url(self, body, user, start_response):
+        if self.db_path:
+            return self.respond(start_response, 400, {"error": "O upload direto está disponível somente na implantação Supabase."})
+        filename = os.path.basename(str(body.get("fileName") or "").replace("\\", "/"))
+        ext = Path(filename).suffix.lower()
+        allowed = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".png", ".jpg", ".jpeg"}
+        if not filename or len(filename) > 180 or ext not in allowed:
+            raise ValueError("Formato de arquivo não aceito.")
+        stored = uuid.uuid4().hex + ext
+        base = os.environ["SUPABASE_URL"].rstrip("/")
+        key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        object_path = "/".join(quote(part, safe="") for part in (str(user["id"]), stored))
+        request = urllib.request.Request(
+            f"{base}/storage/v1/object/upload/sign/sigam-documentos/{object_path}",
+            data=b"{}", headers={"Content-Type": "application/json", "apikey": key,
+                                  "Authorization": f"Bearer {key}"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                signed = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError("Não foi possível iniciar o upload privado no Supabase Storage.") from error
+        upload_url = signed.get("url") or signed.get("signedURL") or signed.get("signedUrl")
+        if not upload_url:
+            raise RuntimeError("O Supabase Storage não retornou uma URL de upload.")
+        if upload_url.startswith("http://") or upload_url.startswith("https://"):
+            pass
+        elif upload_url.startswith("/storage/v1/"):
+            upload_url = base + upload_url
+        elif upload_url.startswith("/object/"):
+            upload_url = base + "/storage/v1" + upload_url
+        else:
+            upload_url = base + "/storage/v1/" + upload_url.lstrip("/")
+        token = signed.get("token")
+        if token and "token=" not in upload_url:
+            upload_url += ("&" if "?" in upload_url else "?") + "token=" + quote(token, safe="")
+        return self.respond(start_response, 200, {"uploadUrl": upload_url, "storedName": stored,
+                                                   "maxBytes": 8 * 1024 * 1024})
+
     def create_document(self,db,body,user,start_response):
         title=str(body.get("title") or "").strip(); filename=os.path.basename(str(body.get("fileName") or "").replace("\\","/"))
         category=str(body.get("category") or "outros").strip(); content=body.get("fileBase64")
@@ -1321,32 +1455,53 @@ class API:
         ext=Path(filename).suffix.lower()
         extensions={".pdf",".doc",".docx",".xls",".xlsx",".ppt",".pptx",".txt",".csv",".png",".jpg",".jpeg"}
         if ext not in extensions: raise ValueError("Formato não aceito. Use PDF, Office, TXT, CSV, PNG ou JPEG.")
-        if not isinstance(content,str) or len(content)>11_300_000: raise ValueError("O arquivo deve ter até 8 MB.")
-        try: raw=base64.b64decode(content,validate=True)
-        except (ValueError,base64.binascii.Error): raise ValueError("Arquivo codificado inválido.") from None
-        if not raw or len(raw)>8*1024*1024: raise ValueError("O arquivo deve ter entre 1 byte e 8 MB.")
-        signatures={".pdf":raw.startswith(b"%PDF-"),".png":raw.startswith(b"\x89PNG\r\n\x1a\n"),
-            ".jpg":raw.startswith(b"\xff\xd8\xff"),".jpeg":raw.startswith(b"\xff\xd8\xff"),
-            ".doc":raw.startswith(bytes.fromhex("D0CF11E0A1B11AE1")),".xls":raw.startswith(bytes.fromhex("D0CF11E0A1B11AE1")),
-            ".ppt":raw.startswith(bytes.fromhex("D0CF11E0A1B11AE1")),".docx":raw.startswith(b"PK\x03\x04"),
-            ".xlsx":raw.startswith(b"PK\x03\x04"),".pptx":raw.startswith(b"PK\x03\x04"),
-            ".txt":b"\x00" not in raw,".csv":b"\x00" not in raw}
-        if not signatures[ext]: raise ValueError("O conteúdo não corresponde ao formato de arquivo informado.")
+        direct_stored = str(body.get("storedName") or "") if not self.db_path else ""
+        if direct_stored:
+            if not re.fullmatch(r"[a-f0-9]{32}" + re.escape(ext), direct_stored):
+                raise ValueError("O identificador do arquivo enviado é inválido.")
+            raw = None
+        else:
+            if not isinstance(content,str) or len(content)>11_300_000: raise ValueError("O arquivo deve ter até 8 MB.")
+            try: raw=base64.b64decode(content,validate=True)
+            except (ValueError,base64.binascii.Error): raise ValueError("Arquivo codificado inválido.") from None
         task_id=body.get("linkedTaskId") or None; event_id=body.get("linkedEventId") or None
         department_id=body.get("departmentId") or None
         if department_id and (not str(department_id).isdigit() or not db.execute("SELECT 1 FROM departments WHERE id=? AND active=1", (int(department_id),)).fetchone()):
             raise ValueError("Selecione uma secretaria cadastrada e ativa.")
         if task_id and (not str(task_id).isdigit() or not self._personal_task(db,int(task_id),user["id"])): raise ValueError("A tarefa associada não pertence à sua conta.")
         if event_id and (not str(event_id).isdigit() or not self._work_event(db,int(event_id),user["id"])): raise ValueError("O evento associado não pertence à sua conta.")
-        stored=uuid.uuid4().hex+ext; directory=self.db_path.parent/"private_files"/str(user["id"]); directory.mkdir(parents=True,exist_ok=True)
-        file_path=directory/stored
-        file_path.write_bytes(raw)
+        if direct_stored:
+            raw = self.storage_request("GET", user, direct_stored)
+        if not raw or len(raw)>8*1024*1024:
+            if direct_stored: self.storage_request("DELETE", user, direct_stored)
+            raise ValueError("O arquivo deve ter entre 1 byte e 8 MB.")
+        signatures={".pdf":raw.startswith(b"%PDF-"),".png":raw.startswith(b"\x89PNG\r\n\x1a\n"),
+            ".jpg":raw.startswith(b"\xff\xd8\xff"),".jpeg":raw.startswith(b"\xff\xd8\xff"),
+            ".doc":raw.startswith(bytes.fromhex("D0CF11E0A1B11AE1")),".xls":raw.startswith(bytes.fromhex("D0CF11E0A1B11AE1")),
+            ".ppt":raw.startswith(bytes.fromhex("D0CF11E0A1B11AE1")),".docx":raw.startswith(b"PK\x03\x04"),
+            ".xlsx":raw.startswith(b"PK\x03\x04"),".pptx":raw.startswith(b"PK\x03\x04"),
+            ".txt":b"\x00" not in raw,".csv":b"\x00" not in raw}
+        if not signatures[ext]:
+            if direct_stored: self.storage_request("DELETE", user, direct_stored)
+            raise ValueError("O conteúdo não corresponde ao formato de arquivo informado.")
+        stored=direct_stored or uuid.uuid4().hex+ext
         mime=mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        file_path = None
+        if self.db_path:
+            directory=self.db_path.parent/"private_files"/str(user["id"]); directory.mkdir(parents=True,exist_ok=True)
+            file_path=directory/stored
+            file_path.write_bytes(raw)
+        elif not direct_stored:
+            self.storage_request("POST", user, stored, raw, mime)
         try:
             cur=db.execute("INSERT INTO personal_documents(user_id,title,description,category,original_name,stored_name,mime_type,size_bytes,tag,linked_task_id,linked_event_id,attention,department_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (user["id"],title,str(body.get("description") or "")[:5000],category,filename,stored,mime,len(raw),str(body.get("tag") or "")[:120],int(task_id) if task_id else None,int(event_id) if event_id else None,int(bool(body.get("needsAttention"))),int(department_id) if department_id else None))
         except Exception:
-            file_path.unlink(missing_ok=True); raise
+            if file_path:
+                file_path.unlink(missing_ok=True)
+            elif not self.db_path and not direct_stored:
+                self.storage_request("DELETE", user, stored)
+            raise
         document_id=cur.lastrowid
         self._activity(db,user["id"],"document",document_id,"create",f"Documento adicionado: {title}")
         record_audit(db,user["id"],"create_document","personal_document",document_id,{"size":len(raw),"category":category})
@@ -1388,14 +1543,65 @@ class API:
     def download_document(self,db,document_id,user,start_response):
         row=db.execute("SELECT * FROM personal_documents WHERE id=? AND user_id=? AND active=1",(document_id,user["id"])).fetchone()
         if not row: return self.respond(start_response,404,{"error":"Documento não encontrado."})
+        filename=str(row["original_name"]).replace("\r","").replace("\n","").replace('"',"'")
+        if not self.db_path:
+            location = self.storage_signed_download_url(user, row["stored_name"], filename)
+            start_response("302 Found", [("Location", location), ("Cache-Control", "no-store"),
+                                          ("Content-Length", "0"), ("X-Content-Type-Options", "nosniff")])
+            return [b""]
         target=(self.db_path.parent/"private_files"/str(user["id"])/row["stored_name"]).resolve()
         expected=(self.db_path.parent/"private_files"/str(user["id"])).resolve()
         if expected not in target.parents or not target.is_file(): return self.respond(start_response,404,{"error":"Arquivo não encontrado."})
-        payload=target.read_bytes(); filename=str(row["original_name"]).replace("\r","").replace("\n","").replace('"',"'")
+        payload=target.read_bytes()
         start_response("200 OK",[("Content-Type",row["mime_type"]),("Content-Length",str(len(payload))),
             ("Content-Disposition",f"attachment; filename=\"arquivo\"; filename*=UTF-8''{quote(filename)}"),
             ("Cache-Control","no-store"),("X-Content-Type-Options","nosniff")])
         return [payload]
+
+    @staticmethod
+    def storage_signed_download_url(user, stored_name, filename):
+        base = os.environ["SUPABASE_URL"].rstrip("/")
+        key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        object_path = "/".join(quote(part, safe="") for part in (str(user["id"]), stored_name))
+        request = urllib.request.Request(
+            f"{base}/storage/v1/object/sign/sigam-documentos/{object_path}",
+            data=json.dumps({"expiresIn": 60, "download": filename}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "apikey": key,
+                     "Authorization": f"Bearer {key}"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError("Não foi possível criar o link temporário do documento.") from error
+        signed_url = result.get("signedURL") or result.get("signedUrl")
+        if not signed_url:
+            raise RuntimeError("O Supabase Storage não retornou um link temporário.")
+        return signed_url if signed_url.startswith("http") else base + "/storage/v1" + signed_url
+
+    @staticmethod
+    def storage_request(method, user, stored_name, payload=None, mime_type="application/octet-stream"):
+        """Private Supabase Storage access; object owner is checked by the API first."""
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        base = os.environ["SUPABASE_URL"].rstrip("/")
+        key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        owner = str(user["id"])
+        object_path = "/".join(urllib.parse.quote(part, safe="") for part in (owner, stored_name))
+        url = f"{base}/storage/v1/object/sigam-documentos/{object_path}"
+        headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+        if payload is not None:
+            headers["Content-Type"] = mime_type
+            headers["x-upsert"] = "false"
+        request = urllib.request.Request(url, data=payload, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise FileNotFoundError("Arquivo não encontrado no armazenamento.") from None
+            raise RuntimeError("Falha ao acessar o armazenamento privado do Supabase.") from error
 
     def plan(self,db,method,body,user,start_response):
         day=str(body.get("date") or date.today().isoformat())

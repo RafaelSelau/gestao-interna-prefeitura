@@ -1,5 +1,40 @@
 # SIGPM — Sistema de Gestão e Produtividade Municipal
 
+## Publicar na Vercel com Supabase
+
+O projeto mantém o frontend HTML/CSS/JavaScript e o backend Python WSGI. A Vercel serve as páginas estáticas e executa a API em `api/index.py`. Em produção, a API usa PostgreSQL no Supabase, Supabase Auth para validar senhas e um bucket privado do Supabase Storage para documentos. O arquivo SQLite e `backend/private_files/` continuam somente para execução local.
+
+### Configurar o Supabase
+
+1. Crie um projeto Supabase e escolha a região mais próxima dos usuários.
+2. No **SQL Editor**, execute `supabase/migrations/202611120001_sigam_schema.sql`. A migração cria as tabelas atuais e legadas, relacionamentos, índices, RLS e o bucket privado `sigam-documentos`.
+3. Em **Authentication → Providers → Email**, mantenha o cadastro público desativado. O sistema cria usuários pelo backend administrativo.
+4. Em **Project Settings → Database → Connection string**, copie a URL do **Transaction pooler** (porta 6543) para `DATABASE_URL`. Substitua a senha de exemplo do `.env.example` pela senha do banco.
+5. Em **Project Settings → API**, copie a URL do projeto e a chave publicável/anon. A chave `service_role` é secreta: ficará somente nas variáveis server-side da Vercel.
+6. Crie a conta do primeiro administrador em **Authentication → Users → Add user**. Depois abra `supabase/bootstrap_admin.sql`, troque o e-mail e o nome de exemplo e execute no **SQL Editor**. Atualize a página de login e entre com esse e-mail.
+
+### Configurar a Vercel
+
+1. Importe o repositório `RafaelSelau/gestao-interna-prefeitura` na Vercel. A raiz do projeto é a raiz do repositório; não defina uma pasta de frontend separada.
+2. Em **Settings → Environment Variables**, cadastre estas variáveis para **Production**, **Preview** e **Development**:
+
+   - `DATABASE_URL`: string do Transaction pooler Supabase.
+   - `SUPABASE_URL`: URL do projeto, como `https://<project-ref>.supabase.co`.
+   - `SUPABASE_ANON_KEY`: chave publicável/anon do projeto.
+   - `SUPABASE_SERVICE_ROLE_KEY`: chave `service_role`/secret, marcada como secreta e nunca prefixada com `VITE_`, `NEXT_PUBLIC_` ou equivalente.
+
+3. Faça o primeiro deploy pela Vercel. Os próximos commits na branch conectada serão publicados automaticamente.
+4. Em **Supabase → Authentication → URL Configuration**, defina o domínio de produção da Vercel como **Site URL**. Se adicionar login por link de e-mail no futuro, inclua também os domínios de Preview nas URLs permitidas.
+5. Abra `/portal.html`, crie usuários municipais pela administração do sistema e confira login, tarefas, documentos, secretarias e dashboard.
+
+As contas existentes que ainda usam hash scrypt são verificadas localmente uma vez no primeiro login com a senha atual e então vinculadas ao Supabase Auth. Para isso, o nome de usuário precisa ser atualizado para o e-mail da conta no Supabase. Contas sem e-mail válido precisam ser criadas novamente pelo administrador. Senhas não são copiadas em texto puro.
+
+O esquema é criado pelo arquivo de migração; o deploy **não copia automaticamente** os registros do SQLite para o novo projeto. Antes de abrir o sistema para uso, decida quais registros locais devem ser preservados e migre apenas dados revisados. Não use dados fictícios nem documentos pessoais reais em produção sem a autorização e a governança municipal apropriadas.
+
+### Desenvolvimento local
+
+Para desenvolvimento, a API continua usando SQLite local e o fluxo atual de configuração inicial. As variáveis de Supabase são exigidas somente pela função Vercel. Dependências e comandos locais continuam descritos nas seções abaixo.
+
 ## Executar localmente
 
 Python 3.10 ou superior não exige pacotes extras. Inicie o servidor integrado pela pasta do projeto:
