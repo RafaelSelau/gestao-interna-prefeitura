@@ -1,0 +1,7 @@
+backend/sigpm*.sqlite3*
+backend/private_files/
+.env
+.env.*
+!.env.example
+__pycache__/
+backend/**/__pycache__/

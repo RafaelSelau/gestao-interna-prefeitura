@@ -1,0 +1,8 @@
+backend/sigpm*.sqlite3*
+backend/private_files
+backend/**/__pycache__
+backend/tests
+*.pyc
+.env
+.env.*
+!.env.example
