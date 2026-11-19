@@ -10,6 +10,7 @@ import hmac
 import json
 import base64
 import mimetypes
+import logging
 import os
 import re
 import secrets
@@ -391,7 +392,10 @@ class API:
             return self.respond(start_response, 403, {"error": str(error)})
         except (sqlite3.IntegrityError, PostgresIntegrityError) as error:
             return self.respond(start_response, 409, {"error": "Conflito de dados: verifique duplicidade e vínculos.", "detail": str(error)})
-        except PostgresOperationalError:
+        except PostgresOperationalError as error:
+            sqlstate = getattr(error, "sqlstate", None) or "unavailable"
+            logging.error("SIGAM database request failed (%s, SQLSTATE=%s).",
+                          type(error).__name__, sqlstate)
             return self.respond(start_response, 503, {
                 "error": "Banco de dados temporariamente indisponível. Tente novamente em instantes."
             }, [("Retry-After", "30")])
@@ -515,8 +519,7 @@ class API:
         key = service_key if admin else public_key
         request = urllib.request.Request(
             f"{base}/auth/v1/{path}", data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "apikey": key,
-                     "Authorization": f"Bearer {key}"}, method=method)
+            headers={"Content-Type": "application/json", "apikey": key}, method=method)
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -1430,8 +1433,7 @@ class API:
         object_path = "/".join(quote(part, safe="") for part in (str(user["id"]), stored))
         request = urllib.request.Request(
             f"{base}/storage/v1/object/upload/sign/sigam-documentos/{object_path}",
-            data=b"{}", headers={"Content-Type": "application/json", "apikey": key,
-                                  "Authorization": f"Bearer {key}"}, method="POST")
+            data=b"{}", headers={"Content-Type": "application/json", "apikey": key}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 signed = json.loads(response.read().decode("utf-8"))
@@ -1574,8 +1576,7 @@ class API:
         request = urllib.request.Request(
             f"{base}/storage/v1/object/sign/sigam-documentos/{object_path}",
             data=json.dumps({"expiresIn": 60, "download": filename}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "apikey": key,
-                     "Authorization": f"Bearer {key}"}, method="POST")
+            headers={"Content-Type": "application/json", "apikey": key}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 result = json.loads(response.read().decode("utf-8"))
@@ -1598,7 +1599,7 @@ class API:
         owner = str(user["id"])
         object_path = "/".join(urllib.parse.quote(part, safe="") for part in (owner, stored_name))
         url = f"{base}/storage/v1/object/sigam-documentos/{object_path}"
-        headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+        headers = {"apikey": key}
         if payload is not None:
             headers["Content-Type"] = mime_type
             headers["x-upsert"] = "false"

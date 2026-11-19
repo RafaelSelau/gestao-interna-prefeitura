@@ -1,8 +1,10 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from backend.app import API, bootstrap_admin, bootstrap_demo, database
 
@@ -385,6 +387,55 @@ class APITest(unittest.TestCase):
         response = self.request("POST", "/api/public/respond", {"protocol": protocol, "accessToken": token, "message": "Ao lado da escola municipal."}, authenticated=False)
         self.assertEqual(response["status"], 200)
         self.assertEqual(self.request("POST", "/api/public/track", {"protocol": protocol, "accessToken": token}, authenticated=False)["body"]["status"], "em_atendimento")
+
+
+class SupabaseKeyHeaderTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_ANON_KEY": "sb_publishable_test_key",
+            "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_test_key",
+        })
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    @staticmethod
+    def response(body):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = body
+        return response
+
+    def assert_api_key_only(self, request, expected_key):
+        self.assertEqual(request.get_header("Apikey"), expected_key)
+        self.assertIsNone(request.get_header("Authorization"))
+
+    @patch("urllib.request.urlopen")
+    def test_auth_uses_publishable_and_secret_keys_without_bearer(self, urlopen):
+        urlopen.return_value = self.response(b'{"user":{"id":"test-user"}}')
+        api = API.__new__(API)
+
+        api.supabase_auth_request("token?grant_type=password", {"email": "test@example.invalid"})
+        public_request = urlopen.call_args.args[0]
+        self.assert_api_key_only(public_request, "sb_publishable_test_key")
+
+        api.supabase_auth_request("admin/users", {"email": "test@example.invalid"}, admin=True)
+        admin_request = urlopen.call_args.args[0]
+        self.assert_api_key_only(admin_request, "sb_secret_test_key")
+
+    @patch("urllib.request.urlopen")
+    def test_storage_requests_use_secret_key_without_bearer(self, urlopen):
+        urlopen.return_value = self.response(b"file-bytes")
+        API.storage_request("GET", {"id": 42}, "document.pdf")
+        request = urlopen.call_args.args[0]
+        self.assert_api_key_only(request, "sb_secret_test_key")
+
+    @patch("urllib.request.urlopen")
+    def test_signed_storage_download_uses_secret_key_without_bearer(self, urlopen):
+        urlopen.return_value = self.response(b'{"signedURL":"/object/sign/test"}')
+        API.storage_signed_download_url({"id": 42}, "document.pdf", "document.pdf")
+        request = urlopen.call_args.args[0]
+        self.assert_api_key_only(request, "sb_secret_test_key")
 
 
 if __name__ == "__main__":

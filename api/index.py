@@ -70,9 +70,11 @@ class VercelAPI:
             try:
                 self._api = API(os.environ["DATABASE_URL"])
             except Exception as error:
-                # Do not log exception text: driver errors can include connection
-                # details. The exception class is enough to diagnose safely.
-                logging.error("SIGAM backend initialization failed (%s).", type(error).__name__)
+                # SQLSTATE identifies database errors without logging the DSN,
+                # password, token, or raw driver message.
+                sqlstate = getattr(error, "sqlstate", None) or "unavailable"
+                logging.error("SIGAM backend initialization failed (%s, SQLSTATE=%s).",
+                              type(error).__name__, sqlstate)
                 return self._respond(start_response, "503 Service Unavailable", {
                     "error": "API SIGAM temporariamente indisponível; verifique a conexão com o banco de dados.",
                 }, [("Retry-After", "30")])
