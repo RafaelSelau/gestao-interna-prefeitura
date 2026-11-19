@@ -33,8 +33,12 @@ except ImportError:  # local `python backend/server.py` entry point
 
 try:
     from psycopg import IntegrityError as PostgresIntegrityError
+    from psycopg import OperationalError as PostgresOperationalError
 except ImportError:
     PostgresIntegrityError = sqlite3.IntegrityError
+
+    class PostgresOperationalError(Exception):
+        pass
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = Path(__file__).resolve().parent / "sigpm.sqlite3"
@@ -387,6 +391,10 @@ class API:
             return self.respond(start_response, 403, {"error": str(error)})
         except (sqlite3.IntegrityError, PostgresIntegrityError) as error:
             return self.respond(start_response, 409, {"error": "Conflito de dados: verifique duplicidade e vínculos.", "detail": str(error)})
+        except PostgresOperationalError:
+            return self.respond(start_response, 503, {
+                "error": "Banco de dados temporariamente indisponível. Tente novamente em instantes."
+            }, [("Retry-After", "30")])
         except Exception:
             return self.respond(start_response, 500, {"error": "Erro interno. Consulte os registros do servidor."})
 
