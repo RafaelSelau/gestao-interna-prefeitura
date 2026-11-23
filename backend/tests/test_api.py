@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from api.index import VercelAPI
 from backend.app import API, bootstrap_admin, bootstrap_demo, database
 
 
@@ -94,6 +95,84 @@ class APITest(unittest.TestCase):
             self.assertEqual(profile["work_email"], "demo@example.invalid")
         demo_status = self.request("GET", "/api/setup/status", authenticated=False)
         self.assertTrue(demo_status["body"]["demoConfigured"])
+        with database(self.db_path) as db:
+            admin = db.execute("SELECT username,role FROM users WHERE username='admin'").fetchone()
+            self.assertEqual((admin["username"], admin["role"]), ("admin", "admin"))
+
+    def test_direct_demo_session_reads_fictional_modules_without_database(self):
+        with patch("backend.app.database", side_effect=AssertionError("demo request touched the real database")):
+            login = self.request("POST", "/api/demo/login", {}, authenticated=False)
+            self.assertEqual(login["status"], 200)
+            self.assertTrue(login["body"]["demo"])
+            self.assertEqual(login["body"]["role"], "consulta")
+            self.assertIn("HttpOnly", login["headers"]["Set-Cookie"])
+            self.csrf = login["body"]["csrfToken"]
+
+            session = self.request("GET", "/api/me")
+            self.assertEqual(session["status"], 200)
+            self.assertTrue(session["body"]["demo"])
+            self.assertEqual(session["body"]["csrfToken"], self.csrf)
+            health = self.request("GET", "/api/health")
+            self.assertEqual(health["body"]["storageMode"], "demo")
+            dashboard = self.request("GET", "/api/dashboard")
+            departments = self.request("GET", "/api/departments")
+            tasks = self.request("GET", "/api/tasks")
+            documents = self.request("GET", "/api/documents")
+            self.assertGreater(dashboard["body"]["counts"]["total_tarefas"], 0)
+            self.assertIn("demonstrativa", departments["body"][0]["name"].casefold())
+            self.assertIn("DEMONSTRATIVO", tasks["body"][0]["title"])
+            self.assertIn("DEMONSTRATIVO", documents["body"][0]["title"])
+            self.assertEqual(self.request("GET", "/api/tasks/9101")["status"], 200)
+            self.assertEqual(self.request("GET", "/api/documents/9201")["status"], 200)
+
+    def test_vercel_demo_login_and_static_navigation_do_not_initialize_postgres(self):
+        def call(adapter, method, path, cookie="", payload=None, csrf=""):
+            raw = json.dumps(payload or {}).encode()
+            environ = {"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": "",
+                       "CONTENT_LENGTH": str(len(raw)), "wsgi.input": io.BytesIO(raw),
+                       "HTTP_COOKIE": cookie, "HTTP_X_CSRF_TOKEN": csrf}
+            result = {}
+            def start_response(status, headers):
+                result["status"] = int(status.split()[0])
+                result["headers"] = dict(headers)
+            body = b"".join(adapter(environ, start_response))
+            try:
+                result["body"] = json.loads(body) if body else None
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                result["body"] = body
+            return result
+
+        environment = {
+            "VERCEL": "1", "DATABASE_URL": "postgresql://postgres:invalid@127.0.0.1:6543/postgres",
+            "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_ANON_KEY": "publishable-test-key",
+            "SUPABASE_SERVICE_ROLE_KEY": "server-only-demo-signing-test-key",
+        }
+        with patch.dict(os.environ, environment):
+            adapter = VercelAPI()
+            login = call(adapter, "POST", "/api/demo/login")
+            self.assertEqual(login["status"], 200)
+            cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
+            self.assertIsNone(adapter._api)
+            me = call(adapter, "GET", "/api/me", cookie)
+            self.assertEqual(me["status"], 200)
+            self.assertTrue(me["body"]["demo"])
+            self.assertEqual(call(adapter, "GET", "/api/dashboard", cookie)["status"], 200)
+            page = call(adapter, "GET", "/produtividade.html", cookie)
+            self.assertEqual(page["status"], 200)
+            self.assertIsNone(adapter._api)
+
+    def test_demo_session_is_read_only_and_logout_clears_it(self):
+        login = self.request("POST", "/api/demo/login", {}, authenticated=False)
+        self.assertEqual(login["status"], 200)
+        self.csrf = login["body"]["csrfToken"]
+        with patch("backend.app.database", side_effect=AssertionError("demo write touched the real database")):
+            self.assertEqual(self.request("POST", "/api/tasks", {"title": "Não gravar"})["status"], 403)
+            self.assertEqual(self.request("DELETE", "/api/documents/9201")["status"], 403)
+            self.assertEqual(self.request("POST", "/api/departments", {"name": "Não gravar"})["status"], 403)
+            logout = self.request("POST", "/api/logout", {})
+            self.assertEqual(logout["status"], 200)
+            self.assertIn("Max-Age=0", logout["headers"]["Set-Cookie"])
+        self.assertEqual(self.request("GET", "/api/me")["status"], 401)
         with database(self.db_path) as db:
             admin = db.execute("SELECT username,role FROM users WHERE username='admin'").fetchone()
             self.assertEqual((admin["username"], admin["role"]), ("admin", "admin"))

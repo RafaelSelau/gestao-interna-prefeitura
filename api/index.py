@@ -28,8 +28,8 @@ class VercelAPI:
         self.missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
         self._api: API | None = None
 
-        # Static routes do not need Supabase. Avoid API.__init__, which connects
-        # to the database and validates the production schema immediately.
+        # Static/demo routes do not need Supabase. Keep this adapter free of
+        # database state so a demo session can still be verified during outages.
         self._static = API.__new__(API)
         self._static.db_path = None
 
@@ -47,18 +47,37 @@ class VercelAPI:
     def _static_response(self, environ, start_response):
         path = environ.get("PATH_INFO", "/")
         if path == "/produtividade.html":
-            start_response("302 Found", [
-                ("Location", "/portal.html"),
-                ("Cache-Control", "no-store"),
-                ("Content-Length", "0"),
-            ])
-            return [b""]
+            if self._static.authenticate_demo(environ):
+                return self._static.static(environ, start_response)
+            if self.missing:
+                start_response("302 Found", [
+                    ("Location", "/portal.html"),
+                    ("Cache-Control", "no-store"),
+                    ("Content-Length", "0"),
+                ])
+                return [b""]
+            try:
+                if self._api is None:
+                    self._api = API(os.environ["DATABASE_URL"])
+                return self._api.static(environ, start_response)
+            except Exception:
+                start_response("302 Found", [
+                    ("Location", "/portal.html"),
+                    ("Cache-Control", "no-store"),
+                    ("Content-Length", "0"),
+                ])
+                return [b""]
         return self._static.static(environ, start_response)
 
     def __call__(self, environ, start_response):
         path = environ.get("PATH_INFO", "/")
         if not path.startswith("/api/"):
             return self._static_response(environ, start_response)
+
+        # Health and demo sessions are self-contained and do not need the
+        # production database. This keeps demonstrations usable during a DB outage.
+        if path == "/api/health" or path == "/api/demo/login" or self._static.authenticate_demo(environ):
+            return self._static(environ, start_response)
 
         if self.missing:
             return self._respond(start_response, "503 Service Unavailable", {

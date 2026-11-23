@@ -2,6 +2,7 @@
 .admin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.admin-list{padding:8px 18px 16px}.admin-list>div{padding:11px 0;border-bottom:1px solid #edf0f5;font-size:13px}.admin-list>div:last-child{border:0}.admin-list small{display:block;margin-top:5px;color:#738099;font-size:11px}@media(max-width:760px){.admin-grid{grid-template-columns:1fr}}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.button:disabled{cursor:not-allowed;opacity:.55}
 .demo-access-note{text-align:center!important;margin:7px 0 0!important;font-size:11px!important;color:#738099!important}
+.demo-access{margin-top:17px;padding:16px;border:1px solid #dce7f8;border-radius:12px;background:#f7faff;text-align:center}.demo-access>p:first-child{margin:0 0 12px;color:#61718a;font-size:12px;line-height:1.5}.demo-login-button{width:100%;border-color:#abc8f5;color:#1f55ad;background:#eef5ff}.demo-login-button:hover{background:#e2edff}.login-divider{display:flex;align-items:center;gap:12px;margin:17px 0;color:#8895a8;font-size:11px}.login-divider:before,.login-divider:after{content:"";height:1px;flex:1;background:#e5eaf1}
 
 /* SIGPM portal polish */
 :root{color-scheme:light;--ink:#17253d;--muted:#6b7890;--line:#e1e8f2;--blue:#2464d2;--blue-dark:#194fae;--surface:#fff;--canvas:#f4f7fc}

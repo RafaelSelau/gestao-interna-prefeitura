@@ -29,8 +29,12 @@ from urllib.parse import parse_qs, quote
 
 try:
     from backend.database import PostgresConnection
+    from backend.demo_data import dashboard as demo_dashboard, departments as demo_departments, documents as demo_documents
+    from backend.demo_data import filter_documents as demo_filter_documents, filter_tasks as demo_filter_tasks, tasks as demo_tasks
 except ImportError:  # local `python backend/server.py` entry point
     from database import PostgresConnection
+    from demo_data import dashboard as demo_dashboard, departments as demo_departments, documents as demo_documents
+    from demo_data import filter_documents as demo_filter_documents, filter_tasks as demo_filter_tasks, tasks as demo_tasks
 
 try:
     from psycopg import IntegrityError as PostgresIntegrityError
@@ -313,8 +317,8 @@ class API:
         self.db_path = None if "://" in str(db_path) else Path(db_path)
         if self.db_path:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            initialize(self.db_path)
         self.public_attempts: dict[str, list[float]] = {}
-        initialize(self.db_path)
 
     def __call__(self, environ, start_response):
         method, path = environ.get("REQUEST_METHOD", "GET").upper(), environ.get("PATH_INFO", "/")
@@ -325,14 +329,17 @@ class API:
             if method == "GET" and environ.get("QUERY_STRING"):
                 for key, values in parse_qs(environ["QUERY_STRING"], keep_blank_values=True).items():
                     body[key] = values[-1] if values else ""
+            if method == "GET" and path == "/api/health":
+                return self.respond(start_response, 200, {
+                    "status": "ok", "service": "SIGPM API", "apiVersion": "sigpm-dashboard-v1",
+                    "storageMode": "demo" if self.authenticate_demo(environ) else ("supabase" if not self.db_path else "local"),
+                })
+            if method == "POST" and path == "/api/demo/login":
+                return self.demo_login(start_response)
+            demo_session = self.authenticate_demo(environ)
+            if demo_session:
+                return self.demo_dispatch(method, path, body, environ, demo_session, start_response)
             with database(self.db_path) as db:
-                if method == "GET" and path == "/api/health":
-                    return self.respond(start_response, 200, {
-                        "status": "ok",
-                        "service": "SIGPM API",
-                        "apiVersion": "sigpm-dashboard-v1",
-                        "storageMode": "supabase" if not self.db_path else "local",
-                    })
                 if path.startswith("/api/public/"):
                     return self.public_dispatch(db, method, path, body, environ, start_response)
                 if method == "GET" and path == "/api/setup/status":
@@ -406,8 +413,10 @@ class API:
         rel = environ.get("PATH_INFO", "/").lstrip("/") or "welcome.html"
         target = (ROOT / rel).resolve()
         if target == (ROOT / "produtividade.html").resolve():
-            with database(self.db_path) as db:
-                user, _ = self.authenticate(db, environ)
+            user = self.authenticate_demo(environ)
+            if not user:
+                with database(self.db_path) as db:
+                    user, _ = self.authenticate(db, environ)
             if not user:
                 start_response("302 Found", [("Location", "/portal.html"), ("Cache-Control", "no-store"), ("Content-Length", "0")])
                 return [b""]
@@ -457,6 +466,114 @@ class API:
                 cookies[key] = value
         token = cookies.get("sigpm_session", "")
         return hashlib.sha256(token.encode()).hexdigest() if token else ""
+
+    @staticmethod
+    def demo_session_key():
+        independent = os.environ.get("SIGPM_DEMO_SESSION_SECRET")
+        source = independent or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        if independent and len(independent.encode("utf-8")) < 32:
+            return None
+        if not source:
+            if os.environ.get("VERCEL") or os.environ.get("DATABASE_URL"):
+                return None
+            source = "sigpm-local-demo-session-only"
+        return hmac.new(source.encode("utf-8"), b"sigpm-demo-cookie-v1", hashlib.sha256).digest()
+
+    @staticmethod
+    def demo_cookie(value, age=2 * 60 * 60):
+        secure = "; Secure" if os.environ.get("SIGPM_HTTPS") == "1" or os.environ.get("VERCEL") == "1" else ""
+        return f"sigpm_demo_session={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={age}{secure}"
+
+    def demo_login(self, start_response):
+        key = self.demo_session_key()
+        if not key:
+            return self.respond(start_response, 503, {
+                "error": "O acesso demonstrativo ainda não está configurado no servidor."
+            })
+        csrf = secrets.token_urlsafe(24)
+        payload = json.dumps({"exp": int(time.time()) + 2 * 60 * 60, "csrf": csrf}, separators=(",", ":")).encode()
+        encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+        signature = hmac.new(key, encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        token = f"{encoded}.{signature}"
+        return self.respond(start_response, 200, {
+            "id": "demo", "username": "demo", "name": "Conta de demonstração",
+            "role": "consulta", "departmentId": None, "sectorId": None,
+            "csrfToken": csrf, "demo": True,
+        }, [("Set-Cookie", self.cookie("", 0)), ("Set-Cookie", self.demo_cookie(token))])
+
+    def authenticate_demo(self, environ):
+        cookies = {}
+        for part in environ.get("HTTP_COOKIE", "").split(";"):
+            if "=" in part:
+                name, value = part.strip().split("=", 1)
+                cookies[name] = value
+        token = cookies.get("sigpm_demo_session", "")
+        key = self.demo_session_key()
+        if not token or not key or "." not in token:
+            return None
+        encoded, signature = token.rsplit(".", 1)
+        expected = hmac.new(key, encoded.encode("ascii", "ignore"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        try:
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = json.loads(raw)
+            if int(payload.get("exp", 0)) <= int(time.time()) or not payload.get("csrf"):
+                return None
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return None
+        return {"csrf": payload["csrf"], "user": {
+            "id": "demo", "username": "demo", "display_name": "Conta de demonstração",
+            "role": "consulta", "department_id": None, "sector_id": None,
+        }}
+
+    def demo_dispatch(self, method, path, body, environ, session, start_response):
+        csrf = session["csrf"]
+        if method == "GET" and path == "/api/me":
+            user = session["user"]
+            return self.respond(start_response, 200, {
+                "id": user["id"], "username": user["username"], "name": user["display_name"],
+                "role": user["role"], "departmentId": user["department_id"],
+                "sectorId": user["sector_id"], "csrfToken": csrf, "demo": True,
+            })
+        if method == "POST" and path == "/api/logout":
+            if not hmac.compare_digest(environ.get("HTTP_X_CSRF_TOKEN", ""), csrf):
+                return self.respond(start_response, 403, {"error": "Token CSRF inválido ou ausente."})
+            return self.respond(start_response, 200, {"ok": True}, [
+                ("Set-Cookie", self.demo_cookie("", 0)), ("Set-Cookie", self.cookie("", 0))])
+        if method != "GET":
+            return self.respond(start_response, 403, {
+                "error": "O modo de demonstração permite somente consulta. Os dados reais permanecem protegidos."
+            })
+        if path == "/api/dashboard":
+            return self.respond(start_response, 200, demo_dashboard(str(body.get("date") or "") or None))
+        if path == "/api/departments":
+            return self.respond(start_response, 200, demo_departments())
+        if path.startswith("/api/departments/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[2].isdigit():
+                department = next((row for row in demo_departments() if row["id"] == int(parts[2])), None)
+                return self.respond(start_response, 200 if department else 404,
+                                    department or {"error": "Secretaria demonstrativa não encontrada."})
+        if path == "/api/tasks":
+            return self.respond(start_response, 200, demo_filter_tasks(body))
+        if path.startswith("/api/tasks/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[2].isdigit():
+                task = next((row for row in demo_tasks() if row["id"] == int(parts[2])), None)
+                return self.respond(start_response, 200 if task else 404,
+                                    task or {"error": "Tarefa demonstrativa não encontrada."})
+        if path == "/api/documents":
+            return self.respond(start_response, 200, demo_filter_documents(body))
+        if path.startswith("/api/documents/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[2].isdigit():
+                document = next((row for row in demo_documents() if row["id"] == int(parts[2])), None)
+                return self.respond(start_response, 200 if document else 404,
+                                    document or {"error": "Documento demonstrativo não encontrado."})
+            if len(parts) == 4 and parts[3] == "download":
+                return self.respond(start_response, 403, {"error": "Arquivos fictícios não estão disponíveis para download."})
+        return self.respond(start_response, 404, {"error": "Rota não disponível no modo de demonstração."})
 
     def authenticate(self, db, environ):
         token_hash = self.cookie_token_hash(environ)

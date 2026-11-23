@@ -55,9 +55,15 @@ O administrador inicial é criado pelo formulário local de `/portal.html` ou pe
 
 Os testes da API rodam com `py -m unittest discover -s backend/tests -t . -v`.
 
-### Preparar ambiente para apresentação
+### Modo de demonstração
 
-A conta de demonstração é autenticada pelo backend e deve ficar em uma base SQLite isolada. Configure `SIGPM_DEMO_EMAIL` com o e-mail autorizado para a demonstração e prepare uma base nova:
+Na tela de acesso, **Entrar com conta de demonstração** cria uma sessão assinada pelo backend, sem usuário, e-mail ou senha. Em produção, a assinatura é derivada no servidor de `SUPABASE_SERVICE_ROLE_KEY` (ou use um segredo independente em `SIGPM_DEMO_SESSION_SECRET`). Essa chave nunca é enviada ao navegador. A sessão usa cookie `HttpOnly`, SameSite, CSRF e expira em duas horas; sair encerra o cookie. O login normal e a configuração administrativa continuam separados.
+
+Os módulos demonstrativos usam somente os registros fictícios em `backend/demo_data.py`. As rotas de demonstração não abrem conexão com PostgreSQL/Supabase, permitem apenas leitura e devolvem 403 para gravações. Os registros reais e as tabelas existentes ficam fora desse fluxo. Para testes locais, execute a API padrão em `http://127.0.0.1:8000/`; não use o servidor estático da porta 5500 para testar rotas `/api`.
+
+O bootstrap opcional abaixo continua disponível para quem precisa testar a autenticação local com senha em uma base SQLite totalmente separada:
+
+Configure `SIGPM_DEMO_EMAIL` com o e-mail autorizado e prepare um arquivo novo:
 
 ```powershell
 $env:SIGPM_DEMO_EMAIL = "seu-email-autorizado@municipio.gov.br"
@@ -70,7 +76,7 @@ Use o e-mail autorizado como nome de usuário. O comando pede senhas de pelo men
 py backend/server.py --host 127.0.0.1 --port 8002 --db backend/sigpm-demo-apresentacao.sqlite3
 ```
 
-Abra `http://127.0.0.1:8002/portal.html` e entre com o e-mail autorizado e a senha de consulta que você definiu. `--create-admin` continua sendo o fluxo independente para o administrador inicial. A base de demonstração é separada da base padrão `backend/sigpm.sqlite3`. Use apenas dados fictícios e não exponha essas contas em uma implantação pública.
+Abra `http://127.0.0.1:8002/portal.html` e entre com o e-mail autorizado e a senha de consulta que você definiu. `--create-admin` continua sendo o fluxo independente para o administrador inicial. A base de demonstração é separada da base padrão `backend/sigpm.sqlite3`.
 
 ## O que está implementado
 
