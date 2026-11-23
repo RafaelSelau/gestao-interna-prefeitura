@@ -336,6 +336,8 @@ class API:
                 })
             if method == "POST" and path == "/api/demo/login":
                 return self.demo_login(start_response)
+            if method == "GET" and path == "/api/demo/start":
+                return self.demo_login(start_response, redirect=True)
             demo_session = self.authenticate_demo(environ)
             if demo_session:
                 return self.demo_dispatch(method, path, body, environ, demo_session, start_response)
@@ -484,7 +486,7 @@ class API:
         secure = "; Secure" if os.environ.get("SIGPM_HTTPS") == "1" or os.environ.get("VERCEL") == "1" else ""
         return f"sigpm_demo_session={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={age}{secure}"
 
-    def demo_login(self, start_response):
+    def demo_login(self, start_response, redirect=False):
         key = self.demo_session_key()
         if not key:
             return self.respond(start_response, 503, {
@@ -495,11 +497,23 @@ class API:
         encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
         signature = hmac.new(key, encoded.encode("ascii"), hashlib.sha256).hexdigest()
         token = f"{encoded}.{signature}"
+        cookies = [
+            ("Set-Cookie", self.cookie("", 0)),
+            ("Set-Cookie", self.demo_cookie(token)),
+        ]
+        if redirect:
+            start_response("303 See Other", [
+                ("Location", "/produtividade.html"),
+                ("Cache-Control", "no-store"),
+                ("Content-Length", "0"),
+                *cookies,
+            ])
+            return [b""]
         return self.respond(start_response, 200, {
             "id": "demo", "username": "demo", "name": "Conta de demonstração",
             "role": "consulta", "departmentId": None, "sectorId": None,
             "csrfToken": csrf, "demo": True,
-        }, [("Set-Cookie", self.cookie("", 0)), ("Set-Cookie", self.demo_cookie(token))])
+        }, cookies)
 
     def authenticate_demo(self, environ):
         cookies = {}

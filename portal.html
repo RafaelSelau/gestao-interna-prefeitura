@@ -11,7 +11,11 @@
 </head>
 <body>
   <main class="portal" id="portal" aria-live="polite">
-    <p class="loading">Carregando acesso seguro do SIGPM…</p>
+    <section class="demo-fallback" aria-label="Acesso de demonstração">
+      <p class="loading">Carregando acesso seguro do SIGPM…</p>
+      <a class="button demo-login-button" href="/api/demo/start">Entrar com conta de demonstração</a>
+      <p class="demo-access-note">A demonstração usa dados fictícios e não acessa os registros reais.</p>
+    </section>
   </main>
 </body>
 </html>

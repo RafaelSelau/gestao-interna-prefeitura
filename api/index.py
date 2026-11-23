@@ -92,7 +92,8 @@ class VercelAPI:
 
         # Health and demo sessions are self-contained and do not need the
         # production database. This keeps demonstrations usable during a DB outage.
-        if path == "/api/health" or path == "/api/demo/login" or self._static.authenticate_demo(environ):
+        if (path == "/api/health" or path == "/api/demo/login" or path == "/api/demo/start"
+                or self._static.authenticate_demo(environ)):
             return self._static(environ, start_response)
 
         if self.missing:
