@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from urllib.parse import parse_qsl, parse_qs, urlencode
 
 from backend.app import API
 
@@ -70,6 +71,21 @@ class VercelAPI:
         return self._static.static(environ, start_response)
 
     def __call__(self, environ, start_response):
+        # Vercel rewrites every /api/<route> request to /api/index.py. Carry
+        # the public route in a reserved query parameter and restore it before
+        # dispatch, while preserving the caller's original query parameters.
+        query = environ.get("QUERY_STRING", "")
+        if environ.get("PATH_INFO") == "/api/index.py" and "__sigpm_path=" in query:
+            values = parse_qs(query, keep_blank_values=True)
+            requested_path = values.get("__sigpm_path", [""])[-1]
+            if requested_path.startswith("/api/") and ".." not in requested_path.split("/"):
+                environ = dict(environ)
+                environ["PATH_INFO"] = requested_path
+                environ["QUERY_STRING"] = urlencode([
+                    (key, value) for key, value in parse_qsl(query, keep_blank_values=True)
+                    if key != "__sigpm_path"
+                ])
+
         path = environ.get("PATH_INFO", "/")
         if not path.startswith("/api/"):
             return self._static_response(environ, start_response)

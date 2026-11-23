@@ -126,9 +126,11 @@ class APITest(unittest.TestCase):
             self.assertEqual(self.request("GET", "/api/documents/9201")["status"], 200)
 
     def test_vercel_demo_login_and_static_navigation_do_not_initialize_postgres(self):
-        def call(adapter, method, path, cookie="", payload=None, csrf=""):
+        def call(adapter, method, path, cookie="", payload=None, csrf="", rewritten=False):
             raw = json.dumps(payload or {}).encode()
-            environ = {"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": "",
+            request_path = "/api/index.py" if rewritten and path.startswith("/api/") else path
+            query_string = "__sigpm_path=" + path if rewritten and path.startswith("/api/") else ""
+            environ = {"REQUEST_METHOD": method, "PATH_INFO": request_path, "QUERY_STRING": query_string,
                        "CONTENT_LENGTH": str(len(raw)), "wsgi.input": io.BytesIO(raw),
                        "HTTP_COOKIE": cookie, "HTTP_X_CSRF_TOKEN": csrf}
             result = {}
@@ -149,14 +151,18 @@ class APITest(unittest.TestCase):
         }
         with patch.dict(os.environ, environment):
             adapter = VercelAPI()
-            login = call(adapter, "POST", "/api/demo/login")
+            login = call(adapter, "POST", "/api/demo/login", rewritten=True)
             self.assertEqual(login["status"], 200)
             cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
             self.assertIsNone(adapter._api)
-            me = call(adapter, "GET", "/api/me", cookie)
+            me = call(adapter, "GET", "/api/me", cookie, rewritten=True)
             self.assertEqual(me["status"], 200)
             self.assertTrue(me["body"]["demo"])
-            self.assertEqual(call(adapter, "GET", "/api/dashboard", cookie)["status"], 200)
+            self.assertEqual(call(adapter, "GET", "/api/dashboard", cookie, rewritten=True)["status"], 200)
+            self.assertEqual(call(adapter, "GET", "/api/tasks", cookie, rewritten=True)["status"], 200)
+            self.assertEqual(call(adapter, "GET", "/api/documents", cookie, rewritten=True)["status"], 200)
+            self.assertEqual(call(adapter, "GET", "/api/departments", cookie, rewritten=True)["status"], 200)
+            self.assertEqual(call(adapter, "GET", "/api/health", rewritten=True)["body"]["status"], "ok")
             page = call(adapter, "GET", "/produtividade.html", cookie)
             self.assertEqual(page["status"], 200)
             self.assertIsNone(adapter._api)

@@ -5,3 +5,7 @@ backend/private_files/
 !.env.example
 __pycache__/
 backend/**/__pycache__/
+
+.vercel
+.env*
+!.env.example
