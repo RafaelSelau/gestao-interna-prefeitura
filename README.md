@@ -1,4 +1,4 @@
-# SIGPM — Sistema de Gestão e Produtividade Municipal
+# SIGAM — Sistema Integrado de Gestão e Administração Municipal
 
 ## Publicar na Vercel com Supabase
 
@@ -31,6 +31,21 @@ As contas existentes que ainda usam hash scrypt são verificadas localmente uma 
 
 O esquema é criado pelo arquivo de migração; o deploy **não copia automaticamente** os registros do SQLite para o novo projeto. Antes de abrir o sistema para uso, decida quais registros locais devem ser preservados e migre apenas dados revisados. Não use dados fictícios nem documentos pessoais reais em produção sem a autorização e a governança municipal apropriadas.
 
+### Página pública, SEO e Google Search Console
+
+A URL Vercel atualmente atribuída ao projeto é `https://gestao-interna-prefeitura.vercel.app/`. A página inicial pública apresenta o SIGAM — Sistema Integrado de Gestão e Administração Municipal da Prefeitura Municipal de Morrinhos do Sul – RS. A raiz `/` é a URL canônica; `/index.html` e `/welcome.html` redirecionam para ela. O painel usa `/login` (atalho para `/portal.html`) e permanece protegido pela autenticação da API. A implantação exige as quatro variáveis listadas acima em Production; os valores ficam na Vercel e não devem ser incluídos no repositório.
+
+O `robots.txt` aponta para `https://gestao-interna-prefeitura.vercel.app/sitemap.xml`. O sitemap contém somente a página inicial pública. Login, dashboard, portal do cidadão e API recebem `noindex`; a API também fica bloqueada para rastreamento. As páginas marcadas com `noindex` não devem ser bloqueadas no `robots.txt`, pois o Google precisa rastreá-las para ler a diretiva. O painel continua exigindo autenticação independentemente das diretivas de SEO.
+
+Para cadastrar o site no Google Search Console:
+
+1. Abra [Google Search Console](https://search.google.com/search-console/) e adicione uma propriedade de **Prefixo do URL** com `https://gestao-interna-prefeitura.vercel.app/` (incluindo `https://` e a barra final).
+2. Escolha um método de verificação oferecido pelo Search Console, como **Tag HTML** ou **Arquivo HTML**. Use exatamente o token/arquivo fornecido à sua conta: não existe código de verificação pré-configurado neste repositório. Se usar tag ou arquivo, adicione-o sem substituir os metadados da página e publique novamente; não compartilhe credenciais do Search Console.
+3. Depois da propriedade verificada, abra **Sitemaps**, informe `sitemap.xml` e envie.
+4. Em **Inspeção de URL**, informe `https://gestao-interna-prefeitura.vercel.app/`, execute o teste de URL publicada e use **Solicitar indexação** se estiver acessível e rastreável. Repita apenas para outras páginas públicas canônicas; as áreas internas ficam fora do sitemap e com `noindex`. A solicitação não garante inclusão ou posição nos resultados; confirme o estado depois em Search Console.
+
+O domínio `.vercel.app` é o domínio padrão atual. Para usar domínio municipal próprio, adicione-o em **Vercel → Project → Settings → Domains**, configure os registros DNS exibidos pela Vercel e atualize `canonical`, Open Graph, `robots.txt`, `sitemap.xml` e a propriedade do Search Console para o domínio escolhido. A indexação real só deve ser confirmada no Search Console depois do rastreamento do Google.
+
 ### Desenvolvimento local
 
 Para desenvolvimento, a API continua usando SQLite local e o fluxo atual de configuração inicial. As variáveis de Supabase são exigidas somente pela função Vercel. Dependências e comandos locais continuam descritos nas seções abaixo.
@@ -43,7 +58,7 @@ Python 3.10 ou superior não exige pacotes extras. Inicie o servidor integrado p
 py backend/server.py --host 127.0.0.1 --port 8001
 ```
 
-Abra `http://127.0.0.1:8001/` para a tela institucional do SIGPM e selecione **Entrar no sistema**. O login (ou a configuração inicial local, se ainda não houver administrador) fica em `/portal.html`. Após autenticar, o sistema abre o dashboard em `/produtividade.html`. O menu principal contém apenas **Dashboard**, **Tarefas**, **Documentos**, **Secretarias** e **Sair da conta**. `/index.html` redireciona para a aplicação autenticada e exige sessão. Se a porta estiver ocupada, escolha outra porta e use-a nos endereços. Para encerrar, pressione **Ctrl+C**. O banco SQLite é criado em `backend/sigpm.sqlite3`; não publique esse arquivo.
+Abra `http://127.0.0.1:8001/` para a página institucional do SIGAM e selecione **Acessar o sistema**. O login (ou a configuração inicial local, se ainda não houver administrador) fica em `/portal.html`. Após autenticar, o sistema abre o dashboard em `/produtividade.html`. O menu principal contém apenas **Dashboard**, **Tarefas**, **Documentos**, **Secretarias** e **Sair da conta**. `/index.html` e `/welcome.html` redirecionam à raiz. Se a porta estiver ocupada, escolha outra porta e use-a nos endereços. Para encerrar, pressione **Ctrl+C**. O banco SQLite é criado em `backend/sigpm.sqlite3`; não publique esse arquivo.
 
 Se uma instância antiga do servidor já estiver usando a porta `8001`, pare-a com **Ctrl+C** no terminal dela e execute novamente o comando acima. O painel verifica a versão da API e mostra essa orientação se as rotas atuais de tarefas, dashboard e secretarias não estiverem disponíveis.
 

@@ -412,7 +412,20 @@ class API:
             return self.respond(start_response, 500, {"error": "Erro interno. Consulte os registros do servidor."})
 
     def static(self, environ, start_response):
-        rel = environ.get("PATH_INFO", "/").lstrip("/") or "welcome.html"
+        request_path = environ.get("PATH_INFO", "/") or "/"
+        if request_path == "/login":
+            start_response("302 Found", [
+                ("Location", "/portal.html"), ("Cache-Control", "no-store"), ("Content-Length", "0")
+            ])
+            return [b""]
+        # Some launchers/bookmarks mistakenly append the route-glob token. It is
+        # not a filename; send that exact path to the canonical application entry.
+        if request_path == "/**":
+            start_response("302 Found", [("Location", "/"), ("Cache-Control", "no-store"), ("Content-Length", "0")])
+            return [b""]
+        # Keep the real root document as the entry point. index.html mirrors
+        # the public welcome page used by the production Vercel rewrite.
+        rel = request_path.lstrip("/") or "index.html"
         target = (ROOT / rel).resolve()
         if target == (ROOT / "produtividade.html").resolve():
             user = self.authenticate_demo(environ)
@@ -428,8 +441,9 @@ class API:
         if (ROOT not in target.parents and target != ROOT) or private_root in target.parents or target == private_root or not target.is_file():
             return self.respond(start_response, 404, {"error": "Arquivo não encontrado."})
         content = target.read_bytes()
-        mime = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}.get(target.suffix, "application/octet-stream")
+        mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        if mime.startswith("text/") or mime in {"application/javascript", "application/json", "application/xml", "image/svg+xml"}:
+            mime += "; charset=utf-8"
         start_response("200 OK", [("Content-Type", mime), ("Content-Length", str(len(content))), ("X-Content-Type-Options", "nosniff")])
         return [content]
 

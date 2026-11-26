@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+
+Sitemap: https://gestao-interna-prefeitura.vercel.app/sitemap.xml

@@ -13,7 +13,7 @@ async function api(path, options = {}) {
 }
 
 function layout(title, content) {
-  root.innerHTML = '<div class="login-wrap"><section class="login-card"><div class="brand"><div class="brand-mark">S</div><div><h1>SIGPM</h1><p>Sistema de Gestão e Produtividade Municipal</p></div></div><h2>' + title + '</h2>' + content + '<nav class="form-navigation" aria-label="Navegação SIGPM"><a href="/" class="button nav-button">← Voltar ao SIGPM</a></nav></section></div>';
+  root.innerHTML = '<div class="login-wrap"><section class="login-card"><div class="brand"><div class="brand-mark">S</div><div><h1>SIGAM</h1><p>Sistema Integrado de Gestão e Administração Municipal</p></div></div><h2>' + title + '</h2>' + content + '<nav class="form-navigation" aria-label="Navegação SIGAM"><a href="/" class="button nav-button">← Voltar ao SIGAM</a></nav></section></div>';
 }
 
 function demoAccessMarkup() {
@@ -40,7 +40,7 @@ function attachDemoLogin() {
 }
 
 function showError(message) {
-  layout('SIGPM indisponível', '<p>' + esc(message) + '</p><p>Confira se o servidor local está ativo e tente novamente.</p><button class="button button-primary" id="try-again">Tentar novamente</button>' + demoAccessMarkup());
+  layout('SIGAM indisponível', '<p>' + esc(message) + '</p><p>Confira se o servidor local está ativo e tente novamente.</p><button class="button button-primary" id="try-again">Tentar novamente</button>' + demoAccessMarkup());
   document.getElementById('try-again').onclick = init;
   attachDemoLogin();
 }
