@@ -1,5 +1,6 @@
 backend/sigpm*.sqlite3*
 backend/private_files/
+backend/tmp*/
 .env
 .env.*
 !.env.example

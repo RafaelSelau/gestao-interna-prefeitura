@@ -382,6 +382,10 @@ class API:
                     record_audit(db, cur.lastrowid, "bootstrap_admin", "user", cur.lastrowid, {"username": username})
                     return self.respond(start_response, 201, {"ok": True, "departmentsCreated": len(departments),
                         "message": "Administrador inicial criado. Entre com as credenciais escolhidas."})
+                if method == "POST" and path == "/api/login/magic-link":
+                    return self.request_magic_link(db, body, environ, start_response)
+                if method == "POST" and path == "/api/login/complete":
+                    return self.complete_magic_login(db, body, start_response)
                 if method == "POST" and path == "/api/login":
                     return self.login(db, environ, body, start_response)
                 user, csrf = self.authenticate(db, environ)
@@ -566,6 +570,96 @@ class API:
         return self.respond(start_response, 200, {"id": row["id"], "username": row["username"],
             "name": row["display_name"], "role": row["role"], "departmentId": unit["department_id"] if unit else None,
             "sectorId": unit["sector_id"] if unit else None, "csrfToken": csrf},
+            [("Set-Cookie", self.cookie(token)), ("Set-Cookie", self.expired_demo_cookie())])
+
+    def request_magic_link(self, db, body, environ, start_response):
+        email = str(body.get("email", "")).strip().casefold()
+        if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ValueError("Informe um e-mail válido.")
+        row = db.execute("""SELECT u.auth_user_id FROM users u
+            LEFT JOIN employee_profiles p ON p.user_id=u.id
+            WHERE u.active=1 AND (lower(u.username)=? OR lower(COALESCE(p.work_email,''))=?)
+            ORDER BY CASE WHEN lower(u.username)=? THEN 0 ELSE 1 END LIMIT 1""",
+            (email, email, email)).fetchone()
+        # Keep the response identical for unknown, inactive, and unlinked accounts.
+        # This avoids exposing which municipal e-mails have access.
+        if row:
+            project_host = (os.environ.get("VERCEL_PROJECT_PRODUCTION_URL")
+                            or os.environ.get("VERCEL_URL", "")).strip()
+            if not project_host:
+                host = environ.get("HTTP_HOST", "127.0.0.1:8001").split(":", 1)[0]
+                project_host = host if host in {"localhost", "127.0.0.1"} else ""
+            # Vercel provides a hostname, not a URL. Reject unexpected values
+            # rather than allowing a request to choose the authentication redirect.
+            if project_host.startswith(("https://", "http://")):
+                project_host = urllib.parse.urlsplit(project_host).netloc
+            if not re.fullmatch(r"(?:localhost|127\.0\.0\.1|[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+)(?::\d{1,5})?", project_host):
+                project_host = ""
+            if not project_host:
+                raise RuntimeError("O domínio de retorno do login não está configurado.")
+            redirect_to = f"https://{project_host}/portal.html#magic-link"
+            query = urllib.parse.urlencode({"redirect_to": redirect_to})
+            base = os.environ["SUPABASE_URL"].rstrip("/")
+            request = urllib.request.Request(
+                f"{base}/auth/v1/otp?{query}",
+                data=json.dumps({"email": email, "create_user": False}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "apikey": os.environ["SUPABASE_ANON_KEY"]},
+                method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=15):
+                    pass
+            except urllib.error.HTTPError as error:
+                if error.code in (400, 401, 422, 429):
+                    logging.warning("SIGAM passwordless sign-in was rejected (HTTP %s).", error.code)
+                    raise ValueError("Não foi possível enviar o link agora. Aguarde um minuto e tente novamente.") from None
+                raise RuntimeError(f"Supabase Auth recusou o envio do link (HTTP {error.code}).") from error
+            except urllib.error.URLError as error:
+                logging.warning("SIGAM passwordless sign-in could not reach Supabase Auth (%s).", type(error.reason).__name__)
+                raise RuntimeError("O serviço de e-mail de acesso está temporariamente indisponível.") from None
+        return self.respond(start_response, 202, {
+            "message": "Se o e-mail estiver associado a uma conta ativa do SIGAM, enviaremos um link de acesso."
+        })
+
+    def complete_magic_login(self, db, body, start_response):
+        access_token = str(body.get("accessToken", ""))
+        if len(access_token) < 20 or len(access_token) > 8192:
+            return self.respond(start_response, 401, {"error": "Link inválido ou expirado. Solicite outro link."})
+        base = os.environ.get("SUPABASE_URL", "").rstrip("/")
+        public_key = os.environ.get("SUPABASE_ANON_KEY", "")
+        if not base or not public_key:
+            return self.respond(start_response, 503, {"error": "O login por e-mail não está configurado."})
+        request = urllib.request.Request(
+            f"{base}/auth/v1/user", headers={"apikey": public_key,
+            "Authorization": f"Bearer {access_token}"}, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                identity = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, json.JSONDecodeError):
+            return self.respond(start_response, 401, {"error": "Link inválido ou expirado. Solicite outro link."})
+        auth_user_id = str(identity.get("id", ""))
+        email = str(identity.get("email", "")).strip().casefold()
+        if not auth_user_id or not email or not identity.get("email_confirmed_at"):
+            return self.respond(start_response, 401, {"error": "Link inválido ou expirado. Solicite outro link."})
+        user = db.execute("""SELECT u.*,uu.department_id,uu.sector_id FROM users u
+            LEFT JOIN user_units uu ON uu.user_id=u.id
+            LEFT JOIN employee_profiles p ON p.user_id=u.id
+            WHERE u.active=1 AND (u.auth_user_id=? OR u.auth_user_id IS NULL)
+              AND (lower(u.username)=? OR lower(COALESCE(p.work_email,''))=?) LIMIT 1""",
+            (auth_user_id, email, email)).fetchone()
+        if not user:
+            return self.respond(start_response, 403, {"error": "Esta conta não está vinculada a um usuário ativo do SIGAM."})
+        if not user["auth_user_id"]:
+            updated = db.execute("UPDATE users SET auth_user_id=? WHERE id=? AND auth_user_id IS NULL",
+                                 (auth_user_id, user["id"]))
+            if updated.rowcount != 1:
+                return self.respond(start_response, 403, {"error": "Esta conta já está vinculada a outro acesso. Contate o administrador."})
+        token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
+        db.execute("INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)",
+                   (hashlib.sha256(token.encode()).hexdigest(), user["id"], csrf,
+                    int(time.time()) + SESSION_SECONDS))
+        record_audit(db, user["id"], "login_magic_link", "session")
+        return self.respond(start_response, 200, {"id": user["id"], "username": user["username"],
+            "name": user["display_name"], "role": user["role"], "csrfToken": csrf},
             [("Set-Cookie", self.cookie(token)), ("Set-Cookie", self.expired_demo_cookie())])
 
     def supabase_auth_request(self, path, payload, admin=False, method="POST"):

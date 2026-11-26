@@ -22,21 +22,41 @@ function showError(message) {
 }
 
 function showLogin(error = '') {
-  layout('Entrar no sistema', '<form id="login-form"><p>Acesse com seu usuário ou e-mail e senha da conta municipal.</p><div class="field"><label for="username">Usuário ou e-mail</label><input class="control" id="username" name="username" autocomplete="username" required></div><div class="field"><label for="password">Senha</label><input class="control" id="password" name="password" type="password" autocomplete="current-password" required></div><p class="form-error" id="login-error" role="alert">' + esc(error) + '</p><button class="button button-primary" type="submit" style="width:100%">Entrar</button></form>');
-  document.getElementById('login-form').addEventListener('submit', async event => {
+  layout('Acessar o sistema', '<p>Informe o e-mail cadastrado na conta municipal. Enviaremos um link de acesso de uso único; não é necessário digitar senha.</p><form id="magic-link-form"><div class="field"><label for="magic-email">E-mail da conta municipal</label><input class="control" id="magic-email" name="email" type="email" maxlength="254" autocomplete="email" required></div><p class="form-error" id="magic-error" role="alert">' + esc(error) + '</p><button class="button button-primary" type="submit" style="width:100%">Enviar link de acesso</button><p class="form-success" id="magic-success" role="status" aria-live="polite"></p></form>');
+  document.getElementById('magic-link-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
     const button = form.querySelector('[type="submit"]');
+    const errorNode = document.getElementById('magic-error');
+    const successNode = document.getElementById('magic-success');
     button.disabled = true;
+    errorNode.textContent = '';
+    successNode.textContent = '';
     try {
-      const session = await api('/login', {method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form)))});
-      csrf = session.csrfToken;
-      window.location.assign('/produtividade.html');
+      const result = await api('/login/magic-link', {method: 'POST', body: JSON.stringify({email: form.elements.email.value})});
+      successNode.textContent = result.message;
     } catch (err) {
-      document.getElementById('login-error').textContent = err.message;
+      errorNode.textContent = err.message;
+    } finally {
       button.disabled = false;
     }
   });
+}
+
+async function completeMagicLink() {
+  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const accessToken = fragment.get('access_token');
+  if (!accessToken) return false;
+  // Remove the one-time bearer token from the address bar before any API call.
+  window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+  try {
+    const session = await api('/login/complete', {method: 'POST', body: JSON.stringify({accessToken})});
+    csrf = session.csrfToken;
+    window.location.replace('/produtividade.html');
+  } catch (error) {
+    showLogin(error.message);
+  }
+  return true;
 }
 
 function showSetup() {
@@ -65,10 +85,11 @@ function showSetup() {
 }
 
 function showCloudBootstrap() {
-  layout('Configurar administrador inicial', '<p>Crie a primeira conta no Supabase e associe-a ao SIGAM antes de entrar.</p><ol><li>Abra o painel do Supabase e vá a <b>Authentication → Users → Add user</b>. Crie o usuário com o e-mail e senha do administrador.</li><li>No <b>SQL Editor</b>, execute o arquivo <code>supabase/bootstrap_admin.sql</code>, substituindo o e-mail e o nome de exemplo.</li><li>Atualize esta página e entre com as credenciais definidas no Supabase.</li></ol><p><a class="button button-primary" href="https://supabase.com/dashboard" target="_blank" rel="noopener">Abrir Supabase</a></p>');
+  layout('Configurar administrador inicial', '<p>Crie a primeira conta no Supabase e associe-a ao SIGAM antes de entrar.</p><ol><li>Abra o painel do Supabase e vá a <b>Authentication → Users</b>. Convide ou crie o usuário com o e-mail institucional autorizado.</li><li>No <b>SQL Editor</b>, execute <code>supabase/bootstrap_admin.sql</code> após substituir o e-mail e o nome de exemplo.</li><li>Atualize esta página e solicite o link de acesso enviado ao e-mail cadastrado.</li></ol><p><a class="button button-primary" href="https://supabase.com/dashboard" target="_blank" rel="noopener">Abrir Supabase</a></p>');
 }
 
 async function init() {
+  if (await completeMagicLink()) return;
   try {
     try {
       await api('/me');

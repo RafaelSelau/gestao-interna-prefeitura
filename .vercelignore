@@ -1,5 +1,6 @@
 backend/sigpm*.sqlite3*
 backend/private_files
+backend/tmp*/
 backend/**/__pycache__
 backend/tests
 vercel_upload_4c7817b/

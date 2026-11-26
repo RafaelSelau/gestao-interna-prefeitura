@@ -2,6 +2,7 @@ import io
 import json
 import os
 import tempfile
+import urllib.parse
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -100,6 +101,74 @@ class APITest(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/demo/start")["status"], 404)
         self.assertEqual(self.request("GET", "/api/tasks")["body"], [])
         self.assertFalse(hasattr(self.api, "authenticate_demo"))
+
+    @patch.dict(os.environ, {
+        "SUPABASE_URL": "https://project.example.supabase.co",
+        "SUPABASE_ANON_KEY": "public-test-key",
+        "VERCEL_PROJECT_PRODUCTION_URL": "sigam.example.gov.br",
+    })
+    @patch("backend.app.urllib.request.urlopen")
+    def test_passwordless_login_sends_one_time_link_only_for_active_sigam_account(self, urlopen):
+        with database(self.db_path) as db:
+            db.execute("INSERT INTO employee_profiles(user_id,work_email) VALUES(?,?)",
+                       (1, "admin@example.gov.br"))
+        response = MagicMock()
+        response.__enter__.return_value = response
+        urlopen.return_value = response
+
+        result = self.request("POST", "/api/login/magic-link",
+                              {"email": "ADMIN@example.gov.br"}, authenticated=False)
+
+        self.assertEqual(result["status"], 202)
+        self.assertIn("link de acesso", result["body"]["message"])
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url.split("?", 1)[0],
+                         "https://project.example.supabase.co/auth/v1/otp")
+        self.assertEqual(json.loads(request.data),
+                         {"email": "admin@example.gov.br", "create_user": False})
+        self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query)["redirect_to"],
+                         ["https://sigam.example.gov.br/portal.html#magic-link"])
+
+    @patch.dict(os.environ, {
+        "SUPABASE_URL": "https://project.example.supabase.co",
+        "SUPABASE_ANON_KEY": "public-test-key",
+    })
+    @patch("backend.app.urllib.request.urlopen")
+    def test_passwordless_callback_requires_confirmed_email_and_maps_existing_user(self, urlopen):
+        with database(self.db_path) as db:
+            db.execute("INSERT INTO employee_profiles(user_id,work_email) VALUES(?,?)",
+                       (1, "admin@example.gov.br"))
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({
+            "id": "auth-user-123", "email": "admin@example.gov.br",
+            "email_confirmed_at": "2026-11-26T12:00:00Z",
+        }).encode()
+        urlopen.return_value = response
+
+        result = self.request("POST", "/api/login/complete",
+                              {"accessToken": "x" * 40}, authenticated=False)
+
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["body"]["username"], "admin")
+        self.assertTrue(any(cookie.startswith("sigpm_session=") for cookie in result["set_cookies"]))
+        with database(self.db_path) as db:
+            self.assertEqual(db.execute("SELECT auth_user_id FROM users WHERE id=1").fetchone()[0],
+                             "auth-user-123")
+
+    @patch.dict(os.environ, {
+        "SUPABASE_URL": "https://project.example.supabase.co",
+        "SUPABASE_ANON_KEY": "public-test-key",
+    })
+    @patch("backend.app.urllib.request.urlopen")
+    def test_passwordless_callback_rejects_unconfirmed_email(self, urlopen):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"id": "auth-user-123", "email": "admin"}).encode()
+        urlopen.return_value = response
+        result = self.request("POST", "/api/login/complete",
+                              {"accessToken": "x" * 40}, authenticated=False)
+        self.assertEqual(result["status"], 401)
 
     def test_public_entry_shows_postcard_and_dashboard_requires_an_authenticated_session(self):
         health = self.request("GET", "/api/health", authenticated=False)
