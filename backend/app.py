@@ -347,10 +347,6 @@ class API:
             if method == "GET" and environ.get("QUERY_STRING"):
                 for key, values in parse_qs(environ["QUERY_STRING"], keep_blank_values=True).items():
                     body[key] = values[-1] if values else ""
-            if method == "GET" and path == "/api/health":
-                # Health must verify the backing store. In production this
-                # executes against PostgreSQL inside the same request-scoped
-                # connection lifecycle used by the rest of the API.
             with database(self.db_path) as db:
                 if method == "GET" and path == "/api/health":
                     db.execute("SELECT 1").fetchone()
@@ -452,10 +448,8 @@ class API:
         # the public welcome page used by the production Vercel rewrite.
         target = (ROOT / rel).resolve()
         if target == (ROOT / "produtividade.html").resolve():
-            user = self.authenticate_demo(environ)
-            if not user:
-                with database(self.db_path) as db:
-                    user, _ = self.authenticate(db, environ)
+            with database(self.db_path) as db:
+                user, _ = self.authenticate(db, environ)
             if not user:
                 start_response("302 Found", [("Location", "/portal.html"), ("Cache-Control", "no-store"), ("Content-Length", "0")])
                 return [b""]
@@ -511,132 +505,6 @@ class API:
                 cookies[key] = value
         token = cookies.get("sigpm_session", "")
         return hashlib.sha256(token.encode()).hexdigest() if token else ""
-
-    @staticmethod
-    def demo_session_key():
-        independent = os.environ.get("SIGPM_DEMO_SESSION_SECRET")
-        source = independent or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-        if independent and len(independent.encode("utf-8")) < 32:
-            return None
-        if not source:
-            if os.environ.get("VERCEL") or os.environ.get("DATABASE_URL"):
-                return None
-            source = "sigpm-local-demo-session-only"
-        return hmac.new(source.encode("utf-8"), b"sigpm-demo-cookie-v1", hashlib.sha256).digest()
-
-    @staticmethod
-    def demo_cookie(value, age=2 * 60 * 60):
-        secure = "; Secure" if os.environ.get("SIGPM_HTTPS") == "1" or os.environ.get("VERCEL") == "1" else ""
-        return f"sigpm_demo_session={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={age}{secure}"
-
-    def demo_login(self, start_response, redirect=False):
-        key = self.demo_session_key()
-        if not key:
-            return self.respond(start_response, 503, {
-                "error": "O acesso demonstrativo ainda não está configurado no servidor."
-            })
-        csrf = secrets.token_urlsafe(24)
-        payload = json.dumps({"exp": int(time.time()) + 2 * 60 * 60, "csrf": csrf}, separators=(",", ":")).encode()
-        encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
-        signature = hmac.new(key, encoded.encode("ascii"), hashlib.sha256).hexdigest()
-        token = f"{encoded}.{signature}"
-        cookies = [
-            ("Set-Cookie", self.cookie("", 0)),
-            ("Set-Cookie", self.demo_cookie(token)),
-        ]
-        if redirect:
-            start_response("303 See Other", [
-                ("Location", "/produtividade.html"),
-                ("Cache-Control", "no-store"),
-                ("Content-Length", "0"),
-                *cookies,
-            ])
-            return [b""]
-        return self.respond(start_response, 200, {
-            "id": "demo", "username": "demo", "name": "Conta de demonstração",
-            "role": "consulta", "departmentId": None, "sectorId": None,
-            "csrfToken": csrf, "demo": True,
-        }, cookies)
-
-    def authenticate_demo(self, environ):
-        cookies = {}
-        for part in environ.get("HTTP_COOKIE", "").split(";"):
-            if "=" in part:
-                name, value = part.strip().split("=", 1)
-                cookies[name] = value
-        token = cookies.get("sigpm_demo_session", "")
-        key = self.demo_session_key()
-        if not token or not key or "." not in token:
-            return None
-        encoded, signature = token.rsplit(".", 1)
-        expected = hmac.new(key, encoded.encode("ascii", "ignore"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            return None
-        try:
-            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-            payload = json.loads(raw)
-            if int(payload.get("exp", 0)) <= int(time.time()) or not payload.get("csrf"):
-                return None
-        except (ValueError, TypeError, json.JSONDecodeError):
-            return None
-        return {"csrf": payload["csrf"], "user": {
-            "id": "demo", "username": "demo", "display_name": "Conta de demonstração",
-            "role": "consulta", "department_id": None, "sector_id": None,
-        }}
-
-    def demo_dispatch(self, method, path, body, environ, session, start_response):
-        csrf = session["csrf"]
-        if method == "GET" and path == "/api/me":
-            user = session["user"]
-            return self.respond(start_response, 200, {
-                "id": user["id"], "username": user["username"], "name": user["display_name"],
-                "role": user["role"], "departmentId": user["department_id"],
-                "sectorId": user["sector_id"], "csrfToken": csrf, "demo": True,
-            })
-        if method == "POST" and path == "/api/logout":
-            if not hmac.compare_digest(environ.get("HTTP_X_CSRF_TOKEN", ""), csrf):
-                return self.respond(start_response, 403, {"error": "Token CSRF inválido ou ausente."})
-            return self.respond(start_response, 200, {"ok": True}, [
-                ("Set-Cookie", self.demo_cookie("", 0)), ("Set-Cookie", self.cookie("", 0))])
-        if method != "GET":
-            return self.respond(start_response, 403, {
-                "error": "O modo de demonstração permite somente consulta. Os dados reais permanecem protegidos."
-            })
-        if path == "/api/dashboard":
-            return self.respond(start_response, 200, demo_dashboard(str(body.get("date") or "") or None))
-        if path == "/api/departments":
-            return self.respond(start_response, 200, demo_departments())
-        if path.startswith("/api/departments/"):
-            parts = path.strip("/").split("/")
-            if len(parts) == 3 and parts[2].isdigit():
-                department = next((row for row in demo_departments() if row["id"] == int(parts[2])), None)
-                return self.respond(start_response, 200 if department else 404,
-                                    department or {"error": "Secretaria demonstrativa não encontrada."})
-        if path == "/api/tasks":
-            return self.respond(start_response, 200, demo_filter_tasks(body))
-        if path == "/api/task-assignees":
-            return self.respond(start_response, 200, [
-                {"id": 9801, "display_name": "Servidor demonstrativo — Administração"},
-                {"id": 9802, "display_name": "Servidor demonstrativo — Obras"},
-                {"id": 9803, "display_name": "Servidor demonstrativo — Educação"},
-            ])
-        if path.startswith("/api/tasks/"):
-            parts = path.strip("/").split("/")
-            if len(parts) == 3 and parts[2].isdigit():
-                task = next((row for row in demo_tasks() if row["id"] == int(parts[2])), None)
-                return self.respond(start_response, 200 if task else 404,
-                                    task or {"error": "Tarefa demonstrativa não encontrada."})
-        if path == "/api/documents":
-            return self.respond(start_response, 200, demo_filter_documents(body))
-        if path.startswith("/api/documents/"):
-            parts = path.strip("/").split("/")
-            if len(parts) == 3 and parts[2].isdigit():
-                document = next((row for row in demo_documents() if row["id"] == int(parts[2])), None)
-                return self.respond(start_response, 200 if document else 404,
-                                    document or {"error": "Documento demonstrativo não encontrado."})
-            if len(parts) == 4 and parts[3] == "download":
-                return self.respond(start_response, 403, {"error": "Arquivos fictícios não estão disponíveis para download."})
-        return self.respond(start_response, 404, {"error": "Rota não disponível no modo de demonstração."})
 
     def authenticate(self, db, environ):
         token_hash = self.cookie_token_hash(environ)
@@ -1929,29 +1797,3 @@ def bootstrap_admin(path: str | Path, username: str, name: str, password: str,
         record_audit(db, cur.lastrowid, "bootstrap_admin", "user", cur.lastrowid, {"username": username})
 
 
-def bootstrap_demo(path: str | Path, gestor_password: str, consulta_password: str,
-                   consulta_username: str) -> None:
-    """Prepare an isolated demo database without modifying an existing installation."""
-    if len(gestor_password) < 12 or len(consulta_password) < 12:
-        raise ValueError("As senhas de demonstração devem ter ao menos 12 caracteres.")
-    if not consulta_username or "@" not in consulta_username or len(consulta_username) > 80 or any(char.isspace() for char in consulta_username):
-        raise ValueError("Configure um e-mail autorizado válido para a conta de consulta da demonstração.")
-    initialize(path)
-    with database(path) as db:
-        if db.execute("SELECT 1 FROM system_flags WHERE flag='demo_seeded'").fetchone():
-            raise ValueError("Esta base de demonstração já foi preparada; nenhuma conta foi alterada.")
-        if db.execute("SELECT 1 FROM users WHERE active=1 LIMIT 1").fetchone():
-            raise ValueError("A base escolhida já contém usuários. Use um arquivo SQLite exclusivo para demonstração.")
-        dep = db.execute("INSERT INTO departments(name) VALUES('Secretaria Demonstrativa')").lastrowid
-        gestor = db.execute("INSERT INTO users(username,display_name,password_hash,role) VALUES(?,?,?,'gestor')",
-                            ("demo.gestor", "Ana Lima · Demonstração", password_hash(gestor_password))).lastrowid
-        consulta = db.execute("INSERT INTO users(username,display_name,password_hash,role) VALUES(?,?,?,'consulta')",
-                              (consulta_username, "Bruno Alves · Demonstração", password_hash(consulta_password))).lastrowid
-        db.executemany("INSERT INTO user_units(user_id,department_id) VALUES(?,?)", [(gestor, dep), (consulta, dep)])
-        db.execute("INSERT INTO employee_profiles(user_id,work_email) VALUES(?,?)", (consulta, consulta_username))
-        demand_id = db.execute("INSERT INTO demands(protocol,title,description,category,department_id,requester_type,requester_name,priority,status,created_by) VALUES(?,?,?,?,?,'cidadao',?,'alta','aberta',?)",
-                               ("DEMO-2026-0001", "Iluminação pública na Praça das Palmeiras",
-                                "Registro fictício para apresentação acadêmica. Nenhum dado pessoal real.",
-                                "Iluminação pública", dep, "Mariana Costa (personagem fictícia)", gestor)).lastrowid
-        record_audit(db, gestor, "create", "demand", demand_id, {"source": "demo_seed"})
-        db.execute("INSERT INTO system_flags(flag,value) VALUES('demo_seeded','complete')")
