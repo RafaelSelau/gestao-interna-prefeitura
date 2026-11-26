@@ -399,7 +399,10 @@ class API:
                 if method == "POST" and path == "/api/logout":
                     db.execute("DELETE FROM sessions WHERE token_hash=?", (self.cookie_token_hash(environ),))
                     record_audit(db, user["id"], "logout", "session")
-                    return self.respond(start_response, 200, {"ok": True}, [("Set-Cookie", self.cookie("", 0))])
+                    return self.respond(start_response, 200, {"ok": True}, [
+                        ("Set-Cookie", self.cookie("", 0)),
+                        ("Set-Cookie", self.expired_demo_cookie()),
+                    ])
                 return self.dispatch(db, method, path, body, user, start_response)
         except (ValueError, json.JSONDecodeError) as error:
             return self.respond(start_response, 400, {"error": str(error)})
@@ -497,6 +500,11 @@ class API:
         return f"sigpm_session={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={age}{secure}"
 
     @staticmethod
+    def expired_demo_cookie():
+        secure = "; Secure" if os.environ.get("SIGPM_HTTPS") == "1" or os.environ.get("VERCEL") == "1" else ""
+        return f"sigpm_demo_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}"
+
+    @staticmethod
     def cookie_token_hash(environ):
         cookies = {}
         for part in environ.get("HTTP_COOKIE", "").split(";"):
@@ -558,7 +566,7 @@ class API:
         return self.respond(start_response, 200, {"id": row["id"], "username": row["username"],
             "name": row["display_name"], "role": row["role"], "departmentId": unit["department_id"] if unit else None,
             "sectorId": unit["sector_id"] if unit else None, "csrfToken": csrf},
-            [("Set-Cookie", self.cookie(token))])
+            [("Set-Cookie", self.cookie(token)), ("Set-Cookie", self.expired_demo_cookie())])
 
     def supabase_auth_request(self, path, payload, admin=False, method="POST"):
         base = os.environ["SUPABASE_URL"].rstrip("/")

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from api.index import VercelAPI
-from backend.app import API, PostgresOperationalError, bootstrap_admin, bootstrap_demo, database
+from backend.app import API, PostgresOperationalError, bootstrap_admin, database
 
 
 class APITest(unittest.TestCase):
@@ -35,10 +35,13 @@ class APITest(unittest.TestCase):
         def start_response(status, headers):
             result["status"] = int(status.split()[0])
             result["headers"] = dict(headers)
+            result["set_cookies"] = [value for name, value in headers if name == "Set-Cookie"]
 
         body = b"".join(self.api(environ, start_response))
-        if "Set-Cookie" in result.get("headers", {}):
-            self.cookie = result["headers"]["Set-Cookie"].split(";", 1)[0]
+        session_cookie = next((value for value in result.get("set_cookies", [])
+                               if value.startswith("sigpm_session=")), None)
+        if session_cookie:
+            self.cookie = session_cookie.split(";", 1)[0]
         try:
             result["body"] = json.loads(body) if body else None
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -80,120 +83,23 @@ class APITest(unittest.TestCase):
         with self.assertRaises(ValueError):
             bootstrap_admin(self.db_path, "second", "Segundo", "senha-segura-123")
 
-    def test_isolated_demo_account_uses_authorized_email_and_consulta_role(self):
-        demo_path = Path(self.temp.name) / "isolated-demo.sqlite3"
-        bootstrap_demo(demo_path, "gestor-senha-ficticia-1", "consulta-senha-ficticia-1", "demo@example.invalid")
-        original_admin = self.request("POST", "/api/login", {"username": "admin", "password": "senha-segura-123"}, authenticated=False)
-        self.assertEqual(original_admin["status"], 200)
-
-        self.api = API(demo_path)
-        login = self.request("POST", "/api/login", {"username": "demo@example.invalid", "password": "consulta-senha-ficticia-1"}, authenticated=False)
-        self.assertEqual(login["status"], 200)
-        self.assertEqual(login["body"]["role"], "consulta")
-        with database(demo_path) as db:
-            profile = db.execute("SELECT work_email FROM employee_profiles WHERE user_id=?", (login["body"]["id"],)).fetchone()
-            self.assertEqual(profile["work_email"], "demo@example.invalid")
-        demo_status = self.request("GET", "/api/setup/status", authenticated=False)
-        self.assertTrue(demo_status["body"]["demoConfigured"])
-        with database(self.db_path) as db:
-            admin = db.execute("SELECT username,role FROM users WHERE username='admin'").fetchone()
-            self.assertEqual((admin["username"], admin["role"]), ("admin", "admin"))
-
-    def test_direct_demo_session_reads_fictional_modules_without_database(self):
-        with patch("backend.app.database", side_effect=AssertionError("demo request touched the real database")):
-            login = self.request("POST", "/api/demo/login", {}, authenticated=False)
-            self.assertEqual(login["status"], 200)
-            self.assertTrue(login["body"]["demo"])
-            self.assertEqual(login["body"]["role"], "consulta")
-            self.assertIn("HttpOnly", login["headers"]["Set-Cookie"])
-            self.csrf = login["body"]["csrfToken"]
-
-            session = self.request("GET", "/api/me")
-            self.assertEqual(session["status"], 200)
-            self.assertTrue(session["body"]["demo"])
-            self.assertEqual(session["body"]["csrfToken"], self.csrf)
-            health = self.request("GET", "/api/health")
-            self.assertEqual(health["body"]["storageMode"], "demo")
-            dashboard = self.request("GET", "/api/dashboard")
-            departments = self.request("GET", "/api/departments")
-            tasks = self.request("GET", "/api/tasks")
-            documents = self.request("GET", "/api/documents")
-            self.assertGreater(dashboard["body"]["counts"]["total_tarefas"], 0)
-            self.assertIn("demonstrativa", departments["body"][0]["name"].casefold())
-            self.assertIn("DEMONSTRATIVO", tasks["body"][0]["title"])
-            self.assertIn("DEMONSTRATIVO", documents["body"][0]["title"])
-            self.assertEqual(self.request("GET", "/api/tasks/9101")["status"], 200)
-            self.assertEqual(self.request("GET", "/api/documents/9201")["status"], 200)
-
-    def test_vercel_demo_login_and_static_navigation_do_not_initialize_postgres(self):
-        def call(adapter, method, path, cookie="", payload=None, csrf="", rewritten=False):
-            raw = json.dumps(payload or {}).encode()
-            request_path = "/api/index.py" if rewritten and path.startswith("/api/") else path
-            query_string = "__sigpm_path=" + path if rewritten and path.startswith("/api/") else ""
-            environ = {"REQUEST_METHOD": method, "PATH_INFO": request_path, "QUERY_STRING": query_string,
-                       "CONTENT_LENGTH": str(len(raw)), "wsgi.input": io.BytesIO(raw),
-                       "HTTP_COOKIE": cookie, "HTTP_X_CSRF_TOKEN": csrf}
-            result = {}
-            def start_response(status, headers):
-                result["status"] = int(status.split()[0])
-                result["headers"] = dict(headers)
-            body = b"".join(adapter(environ, start_response))
-            try:
-                result["body"] = json.loads(body) if body else None
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                result["body"] = body
-            return result
-
-        environment = {
-            "VERCEL": "1", "DATABASE_URL": "postgresql://postgres:invalid@127.0.0.1:6543/postgres",
-            "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_ANON_KEY": "publishable-test-key",
-            "SUPABASE_SERVICE_ROLE_KEY": "server-only-demo-signing-test-key",
-        }
-        with patch.dict(os.environ, environment):
-            adapter = VercelAPI()
-            login = call(adapter, "POST", "/api/demo/login", rewritten=True)
-            self.assertEqual(login["status"], 200)
-            cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
-            self.assertIsNone(adapter._api)
-            me = call(adapter, "GET", "/api/me", cookie, rewritten=True)
-            self.assertEqual(me["status"], 200)
-            self.assertTrue(me["body"]["demo"])
-            self.assertEqual(call(adapter, "GET", "/api/dashboard", cookie, rewritten=True)["status"], 200)
-            self.assertEqual(call(adapter, "GET", "/api/tasks", cookie, rewritten=True)["status"], 200)
-            assignees = call(adapter, "GET", "/api/task-assignees", cookie, rewritten=True)
-            self.assertEqual(assignees["status"], 200)
-            self.assertEqual(assignees["body"][0]["display_name"], "Servidor demonstrativo — Administração")
-            self.assertEqual(call(adapter, "GET", "/api/documents", cookie, rewritten=True)["status"], 200)
-            self.assertEqual(call(adapter, "GET", "/api/departments", cookie, rewritten=True)["status"], 200)
-            # Production health checks the database; the demo session remains
-            # independent and reports its own read-only storage mode.
-            self.assertEqual(call(adapter, "GET", "/api/health", rewritten=True)["status"], 503)
-            demo_health = call(adapter, "GET", "/api/health", cookie, rewritten=True)
-            self.assertEqual(demo_health["status"], 200)
-            self.assertEqual(demo_health["body"]["storageMode"], "demo")
-            demo_link = call(adapter, "GET", "/api/demo/start", rewritten=True)
-            self.assertEqual(demo_link["status"], 303)
-            self.assertEqual(demo_link["headers"]["Location"], "/produtividade.html")
-            self.assertIn("sigpm_demo_session=", demo_link["headers"]["Set-Cookie"])
-            page = call(adapter, "GET", "/produtividade.html", cookie)
-            self.assertEqual(page["status"], 200)
-            self.assertIsNotNone(adapter._api)
-
-    def test_demo_session_is_read_only_and_logout_clears_it(self):
-        login = self.request("POST", "/api/demo/login", {}, authenticated=False)
-        self.assertEqual(login["status"], 200)
-        self.csrf = login["body"]["csrfToken"]
-        with patch("backend.app.database", side_effect=AssertionError("demo write touched the real database")):
-            self.assertEqual(self.request("POST", "/api/tasks", {"title": "Não gravar"})["status"], 403)
-            self.assertEqual(self.request("DELETE", "/api/documents/9201")["status"], 403)
-            self.assertEqual(self.request("POST", "/api/departments", {"name": "Não gravar"})["status"], 403)
-            logout = self.request("POST", "/api/logout", {})
-            self.assertEqual(logout["status"], 200)
-            self.assertIn("Max-Age=0", logout["headers"]["Set-Cookie"])
+    def test_demo_authentication_and_fake_data_routes_are_removed(self):
+        self.assertEqual(self.request("POST", "/api/demo/login", {}, authenticated=False)["status"], 401)
+        self.assertEqual(self.request("GET", "/api/demo/start", authenticated=False)["status"], 401)
+        self.cookie = "sigpm_demo_session=legacy-signed-cookie"
         self.assertEqual(self.request("GET", "/api/me")["status"], 401)
-        with database(self.db_path) as db:
-            admin = db.execute("SELECT username,role FROM users WHERE username='admin'").fetchone()
-            self.assertEqual((admin["username"], admin["role"]), ("admin", "admin"))
+        login = self.request("POST", "/api/login", {
+            "username": "admin", "password": "senha-segura-123"}, authenticated=False)
+        self.csrf = login["body"]["csrfToken"]
+        self.assertTrue(any(cookie.startswith("sigpm_demo_session=") and "Max-Age=0" in cookie
+                            for cookie in login["set_cookies"]))
+        session = self.request("GET", "/api/me")
+        self.assertEqual(session["status"], 200)
+        self.assertNotIn("demo", session["body"])
+        self.assertEqual(self.request("POST", "/api/demo/login", {})["status"], 404)
+        self.assertEqual(self.request("GET", "/api/demo/start")["status"], 404)
+        self.assertEqual(self.request("GET", "/api/tasks")["body"], [])
+        self.assertFalse(hasattr(self.api, "authenticate_demo"))
 
     def test_public_entry_shows_postcard_and_dashboard_requires_an_authenticated_session(self):
         health = self.request("GET", "/api/health", authenticated=False)
@@ -237,7 +143,7 @@ class APITest(unittest.TestCase):
             route_response = self.request("GET", route, authenticated=False)
             self.assertEqual(route_response["status"], 302, route)
             self.assertEqual(route_response["headers"]["Location"], "/portal.html", route)
-        self.assertFalse(self.request("GET", "/api/setup/status", authenticated=False)["body"]["demoConfigured"])
+        self.assertFalse(self.request("GET", "/api/setup/status", authenticated=False)["body"]["needsAdmin"])
         self.login()
         for route in ("/dashboard", "/tarefas", "/documentos", "/secretarias"):
             route_response = self.request("GET", route)
@@ -315,7 +221,7 @@ class APITest(unittest.TestCase):
         self.assertEqual(create["status"], 201)
         result = self.request("POST", "/api/login", {"username": "leitura", "password": "outra-senha-123"}, authenticated=False)
         self.assertEqual(result["status"], 200)
-        self.cookie = result["headers"]["Set-Cookie"].split(";", 1)[0]
+        self.cookie = next(cookie for cookie in result["set_cookies"] if cookie.startswith("sigpm_session=")).split(";", 1)[0]
         self.csrf = result["body"]["csrfToken"]
         self.assertEqual(self.request("POST", "/api/departments", {"name": "Bloqueada"})["status"], 403)
         self.assertEqual(self.request("GET", "/api/departments")["status"], 200)
@@ -328,7 +234,7 @@ class APITest(unittest.TestCase):
             "password": "obras-senha-123", "departmentId": obras["id"]})
         self.assertEqual(user["status"], 201)
         login = self.request("POST", "/api/login", {"username": "obras", "password": "obras-senha-123"}, authenticated=False)
-        self.cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
+        self.cookie = next(cookie for cookie in login["set_cookies"] if cookie.startswith("sigpm_session=")).split(";", 1)[0]
         self.csrf = login["body"]["csrfToken"]
         demand = self.request("POST", "/api/demands", {"title": "Buraco na rua", "description": "Solicitação de reparo",
             "category": "Manutenção urbana", "departmentId": obras["id"], "requesterName": "Solicitante de teste",
@@ -358,7 +264,7 @@ class APITest(unittest.TestCase):
         self.request("POST", "/api/users", {"username": "adm", "name": "Gestor", "role": "gestor",
             "password": "adm-senha-123", "departmentId": first["id"]})
         login = self.request("POST", "/api/login", {"username": "adm", "password": "adm-senha-123"}, authenticated=False)
-        self.cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
+        self.cookie = next(cookie for cookie in login["set_cookies"] if cookie.startswith("sigpm_session=")).split(";", 1)[0]
         self.csrf = login["body"]["csrfToken"]
         denied = self.request("POST", "/api/demands", {"title": "Teste", "description": "Teste", "category": "Geral",
             "departmentId": second["id"], "requesterName": "Teste"})
@@ -465,7 +371,7 @@ class APITest(unittest.TestCase):
             "role": "atendente", "password": "outra-senha-123", "departmentId": department["id"]})
         self.assertEqual(created["status"], 201)
         login = self.request("POST", "/api/login", {"username": "outro", "password": "outra-senha-123"}, authenticated=False)
-        self.cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
+        self.cookie = next(cookie for cookie in login["set_cookies"] if cookie.startswith("sigpm_session=")).split(";", 1)[0]
         self.csrf = login["body"]["csrfToken"]
         self.assertEqual(self.request("GET", "/api/tasks")["body"], [])
         self.assertEqual(self.request("GET", f"/api/tasks/{task_id}")["status"], 404)
@@ -530,7 +436,7 @@ class APITest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/users", {"username": "consulta", "name": "Pessoa Consulta",
             "role": "consulta", "password": "senha-consulta-123", "departmentId": department["id"]})["status"], 201)
         login = self.request("POST", "/api/login", {"username": "consulta", "password": "senha-consulta-123"}, authenticated=False)
-        self.cookie = login["headers"]["Set-Cookie"].split(";", 1)[0]
+        self.cookie = next(cookie for cookie in login["set_cookies"] if cookie.startswith("sigpm_session=")).split(";", 1)[0]
         self.csrf = login["body"]["csrfToken"]
         self.assertEqual(self.request("GET", f"/api/departments/{department['id']}")["status"], 200)
         self.assertEqual(self.request("PUT", f"/api/departments/{department['id']}", {"name": "Alteração indevida"})["status"], 403)

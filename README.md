@@ -67,32 +67,9 @@ As páginas internas exigem uma sessão válida no servidor integrado. O sistema
 
 Rotas principais do painel: `/dashboard`, `/tarefas`, `/documentos` e `/secretarias` carregam o shell autenticado e continuam válidas após atualização direta do navegador. A API oferece `GET /api/dashboard`, CRUD de `/api/tasks`, `/api/documents` e `/api/departments`. Login retorna cookie de sessão HttpOnly e token CSRF. Operações internas de escrita exigem o token no cabeçalho `X-CSRF-Token`. Outras rotas e tabelas antigas permanecem no backend para compatibilidade e preservação dos registros existentes.
 
-O administrador inicial é criado pelo formulário local de `/portal.html` ou pelo comando `--create-admin`. A tela de Secretarias permite cadastro, edição e exclusão para administradores. Uma secretaria só pode ser excluída se não tiver vínculos com setores, usuários, demandas, tarefas ou documentos.
+O administrador inicial é criado pelo formulário local de `/portal.html` ou pelo comando `--create-admin`. Não existe conta nem fluxo de demonstração; todo acesso ao painel exige uma sessão válida. A tela de Secretarias permite cadastro, edição e exclusão para administradores. Uma secretaria só pode ser excluída se não tiver vínculos com setores, usuários, demandas, tarefas ou documentos.
 
 Os testes da API rodam com `py -m unittest discover -s backend/tests -t . -v`.
-
-### Modo de demonstração
-
-Na tela de acesso, **Entrar com conta de demonstração** cria uma sessão assinada pelo backend, sem usuário, e-mail ou senha. Em produção, a assinatura é derivada no servidor de `SUPABASE_SERVICE_ROLE_KEY` (ou use um segredo independente em `SIGPM_DEMO_SESSION_SECRET`). Essa chave nunca é enviada ao navegador. A sessão usa cookie `HttpOnly`, SameSite, CSRF e expira em duas horas; sair encerra o cookie. O login normal e a configuração administrativa continuam separados.
-
-Os módulos demonstrativos usam somente registros fictícios em `backend/demo_data.py`. A lista demonstrativa de tarefas permite criar, editar e excluir itens no `sessionStorage` da aba; essas alterações não são enviadas ao PostgreSQL/Supabase e desaparecem ao encerrar a sessão da aba. As demais rotas demonstrativas não abrem conexão com o banco e recusam gravações. Para testes locais, execute a API padrão em `http://127.0.0.1:8000/`; não use o servidor estático da porta 5500 para testar rotas `/api`.
-
-O bootstrap opcional abaixo continua disponível para quem precisa testar a autenticação local com senha em uma base SQLite totalmente separada:
-
-Configure `SIGPM_DEMO_EMAIL` com o e-mail autorizado e prepare um arquivo novo:
-
-```powershell
-$env:SIGPM_DEMO_EMAIL = "seu-email-autorizado@municipio.gov.br"
-py backend/server.py --create-demo --demo-db backend/sigpm-demo-apresentacao.sqlite3
-```
-
-Use o e-mail autorizado como nome de usuário. O comando pede senhas de pelo menos 12 caracteres sem exibi-las e cria a conta desse e-mail com perfil de consulta, mais uma conta fictícia de gestor e dados fictícios. O arquivo isolado não altera `backend/sigpm.sqlite3`, o administrador ou suas permissões. Para iniciar a API da demonstração, em outro terminal execute:
-
-```powershell
-py backend/server.py --host 127.0.0.1 --port 8002 --db backend/sigpm-demo-apresentacao.sqlite3
-```
-
-Abra `http://127.0.0.1:8002/portal.html` e entre com o e-mail autorizado e a senha de consulta que você definiu. `--create-admin` continua sendo o fluxo independente para o administrador inicial. A base de demonstração é separada da base padrão `backend/sigpm.sqlite3`.
 
 ## O que está implementado
 
@@ -106,7 +83,7 @@ Abra `http://127.0.0.1:8002/portal.html` e entre com o e-mail autorizado e a sen
 - Documentos privados por conta: upload real até 8 MB, categorias, edição de metadados, filtro, associação opcional a secretaria, download autenticado e arquivamento.
 - Secretarias: cadastro, detalhes, pesquisa e edição administrativa; exclusão bloqueada enquanto houver dados vinculados.
 - Login, logout, validação de sessão e permissões permanecem no backend. O painel é responsivo e não usa dados fictícios nem armazenamento local.
-- `/cidadao.html` e suas rotas públicas continuam preservados como página separada, sem link no menu principal. Os módulos demonstrativos antigos e o shell `localStorage` foram removidos do fluxo e seus arquivos JavaScript/CSS sem dependências foram apagados; tabelas e registros antigos do SQLite foram preservados.
+- `/cidadao.html` e suas rotas públicas continuam preservados como página separada, sem link no menu principal. O antigo pacote duplicado de publicação foi isolado em `.vercelignore` para que seu código legado não seja publicado.
 - As rotas de eventos, planejamento, notificações e demandas continuam disponíveis no backend por compatibilidade com relações e dados existentes; elas não aparecem na navegação principal.
 
 ## Limites importantes

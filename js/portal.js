@@ -56,7 +56,7 @@ function showSetup() {
         username: form.elements.username.value, name: form.elements.name.value, password,
         departments: document.getElementById('setup-departments').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean),
       })});
-      showLogin(false, 'Administrador criado. Entre com as credenciais escolhidas.');
+      showLogin('Administrador criado. Entre com as credenciais escolhidas.');
     } catch (error) {
       document.getElementById('setup-error').textContent = error.message;
       button.disabled = false;

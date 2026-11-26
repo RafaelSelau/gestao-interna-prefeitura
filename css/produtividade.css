@@ -43,4 +43,4 @@
 [hidden]{display:none!important}
 @media(max-width:1000px){.dashboard-stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:700px){.dashboard-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-row{grid-template-columns:minmax(90px,1fr) minmax(60px,1.4fr) 26px;gap:7px}.chart-list{padding-left:9px;padding-right:9px}.department-grid{grid-template-columns:1fr;padding:10px}.detail-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.product-top .product-tools .user-chip{display:none}}
-.product-tools .demo-mode-badge{display:inline-flex;align-items:center;padding:6px 9px;border:1px solid #e9c66b;border-radius:99px;background:#fff4d7;color:#785515;font-size:10px;font-weight:800;white-space:nowrap}.demo-mode-notice{margin:0 0 16px;padding:10px 13px;border:1px solid #f1dfad;border-radius:9px;background:#fff9e9;color:#76581c;font-size:12px}.demo-mode [data-action^="new-"]:not([data-action="new-task"]),.demo-mode [data-edit-document],.demo-mode [data-delete-document],.demo-mode .product-item-actions a{display:none!important}.demo-mode .product-tools .user-chip{display:none}
+
