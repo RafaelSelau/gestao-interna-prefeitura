@@ -29,8 +29,7 @@ class VercelAPI:
         self.missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
         self._api: API | None = None
 
-        # Static/demo routes do not need Supabase. Keep this adapter free of
-        # database state so a demo session can still be verified during outages.
+        # Static routes do not need a database connection.
         self._static = API.__new__(API)
         self._static.db_path = None
 
@@ -48,8 +47,6 @@ class VercelAPI:
     def _static_response(self, environ, start_response):
         path = environ.get("PATH_INFO", "/")
         if path == "/produtividade.html":
-            if self._static.authenticate_demo(environ):
-                return self._static.static(environ, start_response)
             if self.missing:
                 start_response("302 Found", [
                     ("Location", "/portal.html"),
@@ -90,13 +87,8 @@ class VercelAPI:
         if not path.startswith("/api/"):
             return self._static_response(environ, start_response)
 
-        # Demo sessions are self-contained and do not need the production database.
         # The health endpoint deliberately goes through the DB-backed API so it
         # reports readiness, not only that this function was invoked.
-        if (path == "/api/demo/login" or path == "/api/demo/start"
-                or self._static.authenticate_demo(environ)):
-            return self._static(environ, start_response)
-
         if self.missing:
             return self._respond(start_response, "503 Service Unavailable", {
                 "error": "API SIGAM não configurada no ambiente de produção.",
