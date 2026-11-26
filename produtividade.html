@@ -4,16 +4,464 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#174c86">
-  <meta name="description" content="SIGAM — painel interno de gestão municipal. Acesso reservado a usuários autenticados.">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>SIGAM — Painel de gestão municipal</title>
   <link rel="icon" type="image/svg+xml" href="/assets/sigam-mark.svg">
   <link rel="stylesheet" href="css/portal.css">
   <link rel="stylesheet" href="css/produtividade.css">
   <link rel="stylesheet" href="css/app-links.css">
-  <script defer src="js/produtividade.js"></script>
 </head>
 <body>
-  <main id="productivity" aria-live="polite"><p class="loading">Carregando o painel SIGAM…</p></main>
+<main id="productivity" aria-live="polite"><p class="loading">Carregando o painel SIGAM…</p></main>
+
+<script>
+// ============================================================
+// SIGAM — Modo Local (sem backend, dados no localStorage)
+// ============================================================
+const app = document.getElementById('productivity');
+
+// Estado global
+const S = {
+  user: { id: 1, name: 'Administrador', role: 'admin' },
+  page: 'dashboard',
+  departments: [],
+  tasks: [],
+  docs: [],
+  taskQuery: '', taskStatus: '', taskPriority: '', taskDepartment: '',
+  taskFrom: '', taskTo: '', taskOpenOnly: false,
+  docQuery: '', docCategory: '', docDepartment: '',
+  departmentQuery: ''
+};
+
+// Labels
+const statusLabels = { aberta: 'Aberta', em_andamento: 'Em andamento', aguardando: 'Aguardando', concluida: 'Concluída', cancelada: 'Cancelada' };
+const priorityLabels = { baixa: 'Baixa', normal: 'Normal', alta: 'Alta', urgente: 'Urgente' };
+const categoryLabels = { administrativo: 'Administrativo', oficio: 'Ofícios', memorando: 'Memorandos', relatorio: 'Relatórios', ata: 'Atas', formulario: 'Formulários', portaria: 'Portarias', referencia: 'Referência', outros: 'Outros' };
+const pages = [['dashboard','Dashboard'],['tarefas','Tarefas'],['documentos','Documentos'],['secretarias','Secretarias']];
+
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
+const fmtDate = (v, time=true) => { if (!v) return 'Sem prazo'; const d = new Date(v.length===10 ? v+'T12:00:00' : v); return Number.isNaN(d.getTime()) ? esc(v) : new Intl.DateTimeFormat('pt-BR', time ? {dateStyle:'short',timeStyle:'short'} : {dateStyle:'medium'}).format(d); };
+const deptName = id => S.departments.find(d => Number(d.id) === Number(id))?.name || 'Sem secretaria';
+let nextId = { tasks: 1, docs: 1, departments: 1 };
+
+// ---- LocalStorage ----
+function saveDB() {
+  localStorage.setItem('sigam_departments', JSON.stringify(S.departments));
+  localStorage.setItem('sigam_tasks', JSON.stringify(S.tasks));
+  localStorage.setItem('sigam_docs', JSON.stringify(S.docs));
+  localStorage.setItem('sigam_nextid', JSON.stringify(nextId));
+}
+
+function loadDB() {
+  try {
+    S.departments = JSON.parse(localStorage.getItem('sigam_departments') || '[]');
+    S.tasks = JSON.parse(localStorage.getItem('sigam_tasks') || '[]');
+    S.docs = JSON.parse(localStorage.getItem('sigam_docs') || '[]');
+    nextId = JSON.parse(localStorage.getItem('sigam_nextid') || '{"tasks":1,"docs":1,"departments":1}');
+    // Seed secretarias iniciais se vazio
+    if (S.departments.length === 0) {
+      const nomes = ['Administração','Assistência Social','Educação','Finanças','Meio Ambiente','Obras e Serviços Urbanos','Saúde','Transportes'];
+      nomes.forEach(n => {
+        S.departments.push({ id: nextId.departments++, name: n, description: 'Secretaria municipal cadastrada no SIGAM.', created_at: new Date().toISOString(), task_count: 0, document_count: 0 });
+      });
+      saveDB();
+    }
+  } catch(e) {
+    S.departments = []; S.tasks = []; S.docs = [];
+  }
+}
+
+function recalcCounts() {
+  S.departments.forEach(d => {
+    d.task_count = S.tasks.filter(t => Number(t.department_id) === Number(d.id) && !t.archived_at).length;
+    d.document_count = S.docs.filter(x => Number(x.department_id) === Number(d.id)).length;
+  });
+}
+
+// ---- UI helpers ----
+function toast(msg) {
+  const n = document.createElement('div');
+  n.className = 'toast product-toast'; n.setAttribute('role','status'); n.textContent = msg;
+  document.body.append(n); setTimeout(() => n.remove(), 3500);
+}
+function empty(msg, action='') { return '<div class="empty-state"><p>' + esc(msg) + '</p>' + action + '</div>'; }
+function heading(title, desc, actions='') {
+  return '<div class="product-heading"><div><div class="eyebrow">SIGAM · Sistema Integrado de Gestão e Administração Municipal</div><h2>' + esc(title) + '</h2><p>' + esc(desc) + '</p></div><div class="product-actions">' + actions + '</div></div>';
+}
+function panel(title, desc, body, cls='') {
+  return '<section class="product-panel ' + cls + '"><div class="card"><div class="card-heading"><div><h3>' + esc(title) + '</h3>' + (desc ? '<p>' + esc(desc) + '</p>' : '') + '</div></div>' + body + '</div></section>';
+}
+function options(map, selected) {
+  return Object.entries(map).map(([k,v]) => '<option value="' + k + '" ' + (selected===k?'selected':'') + '>' + v + '</option>').join('');
+}
+
+function shell(content) {
+  app.innerHTML = '<header class="product-top"><a class="brand product-home" href="/" aria-label="SIGAM"><div class="brand-mark">S</div><div><h1>SIGAM</h1><p>Sistema Integrado de Gestão e Administração Municipal</p></div></a><button class="button mobile-menu" data-action="menu" aria-expanded="false">☰ Menu</button><nav class="product-nav" id="product-nav" aria-label="Módulos principais">' +
+    pages.map(([id,n]) => '<button class="' + (S.page===id?'active':'') + '" type="button" data-page="' + id + '">' + n + '</button>').join('') +
+    '</nav><div class="product-tools"><span class="user-chip">' + esc(S.user.name) + '</span></div></header><main class="product-main">' + content + '</main>' +
+    '<div class="product-modal-backdrop" id="modal-backdrop" hidden><section class="product-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="product-modal-head"><h2 id="modal-title"></h2><button class="button" data-action="close-modal" aria-label="Fechar">×</button></div><div class="product-modal-body" id="modal-body"></div></section></div>';
+}
+
+function showModal(title, body) {
+  const el = document.getElementById('modal-backdrop');
+  if (!el) return;
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = body;
+  el.hidden = false;
+  document.body.classList.add('modal-open');
+}
+function closeModal() {
+  const el = document.getElementById('modal-backdrop');
+  if (el) el.hidden = true;
+  document.body.classList.remove('modal-open');
+}
+
+// ---- Páginas ----
+function filteredTasks() {
+  return S.tasks.filter(t => {
+    if (t.archived_at) return false;
+    if (S.taskQuery && !t.title.toLowerCase().includes(S.taskQuery.toLowerCase()) && !(t.description||'').toLowerCase().includes(S.taskQuery.toLowerCase())) return false;
+    if (S.taskStatus && t.status !== S.taskStatus) return false;
+    if (S.taskPriority && t.priority !== S.taskPriority) return false;
+    if (S.taskDepartment && String(t.department_id) !== String(S.taskDepartment)) return false;
+    if (S.taskFrom && t.due_at && t.due_at.slice(0,10) < S.taskFrom) return false;
+    if (S.taskTo && t.due_at && t.due_at.slice(0,10) > S.taskTo) return false;
+    if (S.taskOpenOnly && !['aberta','aguardando'].includes(t.status)) return false;
+    return true;
+  });
+}
+
+function filteredDocs() {
+  return S.docs.filter(d => {
+    if (S.docQuery && !d.title.toLowerCase().includes(S.docQuery.toLowerCase())) return false;
+    if (S.docCategory && d.category !== S.docCategory) return false;
+    if (S.docDepartment && String(d.department_id) !== String(S.docDepartment)) return false;
+    return true;
+  });
+}
+
+function drawDashboard() {
+  recalcCounts();
+  const tasks = S.tasks.filter(t => !t.archived_at);
+  const total = tasks.length;
+  const pendentes = tasks.filter(t => ['aberta','aguardando'].includes(t.status)).length;
+  const emAndamento = tasks.filter(t => t.status === 'em_andamento').length;
+  const concluidas = tasks.filter(t => t.status === 'concluida').length;
+  const proximas = tasks.filter(t => t.due_at && t.due_at.slice(0,10) >= today() && !['concluida','cancelada'].includes(t.status) && t.due_at.slice(0,10) <= (() => { const d = new Date(); d.setDate(d.getDate()+7); return d.toISOString().slice(0,10); })()).length;
+
+  const stat = (val, label, pg, filter='') => '<button class="stat stat-action" type="button" data-page="' + pg + '"' + (filter ? ' data-stat-filter="' + filter + '"' : '') + '><strong>' + Number(val||0) + '</strong><span>' + esc(label) + '</span><small>Abrir registros →</small></button>';
+
+  const recentTasks = tasks.slice().sort((a,b) => b.created_at > a.created_at ? 1 : -1).slice(0,5);
+  const recentDocs = S.docs.slice().sort((a,b) => b.created_at > a.created_at ? 1 : -1).slice(0,5);
+
+  const tasksHtml = recentTasks.length ? '<div class="product-list">' + recentTasks.map(t =>
+    '<article class="product-item"><div class="product-item-main"><span class="badge">' + esc(statusLabels[t.status]||t.status) + '</span><h4>' + esc(t.title) + '</h4><p>' + esc(deptName(t.department_id)) + ' · ' + (t.due_at ? 'Prazo ' + fmtDate(t.due_at) : 'Sem prazo') + '</p></div><button class="button" data-page="tarefas">Ver tarefas</button></article>'
+  ).join('') + '</div>' : empty('Cadastre a primeira tarefa.', '<button class="button button-primary" data-action="new-task">Criar tarefa</button>');
+
+  const docsHtml = recentDocs.length ? '<div class="product-list">' + recentDocs.map(d =>
+    '<article class="product-item"><div class="product-item-main"><h4>' + esc(d.title) + '</h4><p>' + esc(categoryLabels[d.category]||d.category) + ' · ' + esc(deptName(d.department_id)) + '</p><small>' + fmtDate(d.created_at, false) + '</small></div><button class="button" data-page="documentos">Ver documentos</button></article>'
+  ).join('') + '</div>' : empty('Seus documentos aparecerão aqui.', '<button class="button button-primary" data-page="documentos">Adicionar documento</button>');
+
+  const actions = '<button class="button button-primary" data-action="new-task">＋ Nova tarefa</button><button class="button" data-action="new-document">＋ Adicionar documento</button>';
+  shell(heading('Dashboard', 'Visão geral dos seus registros no SIGAM.', actions) +
+    '<section class="product-stats dashboard-stats">' +
+    stat(total, 'Total de tarefas', 'tarefas') +
+    stat(pendentes, 'Pendentes', 'tarefas', 'aberta') +
+    stat(emAndamento, 'Em andamento', 'tarefas', 'em_andamento') +
+    stat(concluidas, 'Concluídas', 'tarefas', 'concluida') +
+    stat(S.departments.length, 'Secretarias', 'secretarias') +
+    '</section><div class="product-grid">' +
+    panel('Tarefas recentes', 'Registros mais novos', tasksHtml, 'wide') +
+    panel('Documentos recentes', 'Arquivos adicionados recentemente', docsHtml, 'wide') +
+    '</div>'
+  );
+}
+
+function drawTasks() {
+  const tasks = filteredTasks();
+  const filters = '<div class="filters-row">' +
+    '<input class="control" id="task-search" type="search" placeholder="Pesquisar tarefas…" value="' + esc(S.taskQuery) + '">' +
+    '<select class="control" id="task-status"><option value="">Todos os status</option>' + Object.entries(statusLabels).map(([k,v]) => '<option value="' + k + '" ' + (S.taskStatus===k?'selected':'') + '>' + v + '</option>').join('') + '</select>' +
+    '<select class="control" id="task-priority"><option value="">Todas as prioridades</option>' + Object.entries(priorityLabels).map(([k,v]) => '<option value="' + k + '" ' + (S.taskPriority===k?'selected':'') + '>' + v + '</option>').join('') + '</select>' +
+    '<select class="control" id="task-department"><option value="">Todas as secretarias</option>' + S.departments.map(d => '<option value="' + d.id + '" ' + (String(S.taskDepartment)===String(d.id)?'selected':'') + '>' + esc(d.name) + '</option>').join('') + '</select>' +
+    '</div>';
+
+  const rows = tasks.length ? '<div class="product-list">' + tasks.map(t =>
+    '<article class="product-item"><div class="product-item-main">' +
+    '<span class="badge priority-' + esc(t.priority) + '">' + esc(priorityLabels[t.priority]||t.priority) + '</span> ' +
+    '<span class="badge">' + esc(statusLabels[t.status]||t.status) + '</span>' +
+    '<h4>' + esc(t.title) + '</h4>' +
+    '<p>' + esc(t.description||'Sem descrição') + '</p>' +
+    '<small class="' + (t.due_at && t.due_at.slice(0,10) < today() && !['concluida','cancelada'].includes(t.status) ? 'late' : '') + '">' +
+    esc(deptName(t.department_id)) + ' · ' + (t.due_at ? 'Prazo ' + fmtDate(t.due_at) : 'Sem prazo') +
+    '</small></div>' +
+    '<div class="product-item-actions">' +
+    '<select class="control compact-status" aria-label="Status" data-task-status="' + t.id + '">' + Object.entries(statusLabels).map(([k,v]) => '<option value="' + k + '" ' + (t.status===k?'selected':'') + '>' + v + '</option>').join('') + '</select>' +
+    '<button class="button" data-edit-task="' + t.id + '">Editar</button>' +
+    '<button class="button button-danger" data-delete-task="' + t.id + '">Excluir</button>' +
+    '</div></article>'
+  ).join('') + '</div>' : empty('Nenhuma tarefa encontrada.', '<button class="button button-primary" data-action="new-task">Criar tarefa</button>');
+
+  shell(heading('Tarefas', 'Crie, priorize, acompanhe e conclua suas tarefas.', '<button class="button button-primary" data-action="new-task">＋ Nova Tarefa</button>') +
+    '<section class="card">' + filters + rows + '</section>');
+}
+
+function drawDocuments() {
+  const docs = filteredDocs();
+  const filters = '<div class="filters-row">' +
+    '<input class="control" id="document-search" type="search" placeholder="Pesquisar por título…" value="' + esc(S.docQuery) + '">' +
+    '<select class="control" id="document-category"><option value="">Todas as categorias</option>' + Object.entries(categoryLabels).map(([k,v]) => '<option value="' + k + '" ' + (S.docCategory===k?'selected':'') + '>' + v + '</option>').join('') + '</select>' +
+    '<select class="control" id="document-department"><option value="">Todas as secretarias</option>' + S.departments.map(d => '<option value="' + d.id + '" ' + (String(S.docDepartment)===String(d.id)?'selected':'') + '>' + esc(d.name) + '</option>').join('') + '</select>' +
+    '</div>';
+
+  const rows = docs.length ? '<div class="product-list">' + docs.map(d =>
+    '<article class="product-item"><div class="product-item-main">' +
+    '<span class="badge">' + esc(categoryLabels[d.category]||d.category) + '</span>' +
+    '<h4>' + esc(d.title) + '</h4>' +
+    '<p>' + esc(d.description||'') + '</p>' +
+    '<small>' + esc(deptName(d.department_id)) + ' · ' + fmtDate(d.created_at, false) + '</small>' +
+    '</div><div class="product-item-actions">' +
+    '<button class="button" data-edit-document="' + d.id + '">Editar</button>' +
+    '<button class="button button-danger" data-delete-document="' + d.id + '">Excluir</button>' +
+    '</div></article>'
+  ).join('') + '</div>' : empty('Nenhum documento encontrado.', '<button class="button button-primary" data-action="new-document">Adicionar documento</button>');
+
+  shell(heading('Documentos', 'Organize e acesse seus arquivos internos.', '<button class="button button-primary" data-action="new-document">＋ Adicionar documento</button>') +
+    '<section class="card">' + filters + rows + '</section>');
+}
+
+function drawDepartments() {
+  recalcCounts();
+  const q = S.departmentQuery.toLocaleLowerCase('pt-BR');
+  const list = S.departments.filter(d => !q || d.name.toLocaleLowerCase('pt-BR').includes(q) || String(d.description||'').toLocaleLowerCase('pt-BR').includes(q));
+
+  const rows = list.length ? '<div class="department-grid">' + list.map(d =>
+    '<article class="department-card">' +
+    '<div class="department-icon" aria-hidden="true">▦</div>' +
+    '<h3>' + esc(d.name) + '</h3>' +
+    '<p>' + esc(d.description||'Secretaria municipal cadastrada no SIGAM.') + '</p>' +
+    '<div class="department-counts">' +
+    '<button class="button" data-department-filter="' + d.id + '">' + Number(d.task_count||0) + ' tarefas</button>' +
+    '<button class="button" data-document-department-filter="' + d.id + '">' + Number(d.document_count||0) + ' documentos</button>' +
+    '</div>' +
+    '<div class="product-item-actions">' +
+    '<button class="button" data-edit-department="' + d.id + '">Editar</button>' +
+    '<button class="button button-danger" data-delete-department="' + d.id + '">Excluir</button>' +
+    '</div></article>'
+  ).join('') + '</div>' : empty(q ? 'Nenhuma secretaria corresponde à pesquisa.' : 'Nenhuma secretaria cadastrada.', '<button class="button button-primary" data-action="new-department">Cadastrar secretaria</button>');
+
+  shell(heading('Secretarias', 'Consulte as unidades e os seus registros associados.', '<button class="button button-primary" data-action="new-department">＋ Nova secretaria</button>') +
+    '<section class="card"><div class="filters-row"><input class="control" id="department-search" type="search" placeholder="Pesquisar secretarias…" value="' + esc(S.departmentQuery) + '"></div>' + rows + '</section>');
+}
+
+function draw() {
+  if (S.page === 'dashboard') drawDashboard();
+  else if (S.page === 'tarefas') drawTasks();
+  else if (S.page === 'documentos') drawDocuments();
+  else drawDepartments();
+}
+
+// ---- Formulários ----
+function taskForm(t = null) {
+  const editing = !!t;
+  showModal(editing ? 'Editar tarefa' : 'Nova Tarefa',
+    '<form id="task-form" data-id="' + (t?.id||'') + '"><div class="form-grid">' +
+    '<div class="field span-2"><label for="tf-title">Título da tarefa</label><input class="control" id="tf-title" name="title" maxlength="180" required value="' + esc(t?.title) + '"></div>' +
+    '<div class="field span-2"><label for="tf-description">Descrição</label><textarea class="control" id="tf-description" name="description" rows="3" maxlength="10000">' + esc(t?.description) + '</textarea></div>' +
+    '<div class="field"><label for="tf-department">Secretaria responsável</label><select class="control" id="tf-department" name="departmentId"><option value="">Sem secretaria</option>' + S.departments.map(d => '<option value="' + d.id + '" ' + (String(t?.department_id||'')===String(d.id)?'selected':'') + '>' + esc(d.name) + '</option>').join('') + '</select></div>' +
+    '<div class="field"><label for="tf-priority">Prioridade</label><select class="control" id="tf-priority" name="priority">' + options(priorityLabels, t?.priority||'normal') + '</select></div>' +
+    '<div class="field"><label for="tf-status">Status</label><select class="control" id="tf-status" name="status">' + options(statusLabels, t?.status||'aberta') + '</select></div>' +
+    '<div class="field"><label for="tf-due">Prazo de conclusão</label><input class="control" id="tf-due" name="dueAt" type="datetime-local" value="' + esc(String(t?.due_at||'').slice(0,16)) + '"></div>' +
+    '<div class="field span-2"><label for="tf-notes">Observações</label><textarea class="control" id="tf-notes" name="observations" rows="2" maxlength="5000">' + esc(t?.observations) + '</textarea></div>' +
+    '</div><p class="product-error" role="alert"></p>' +
+    '<div class="product-form-actions"><button type="button" class="button" data-action="close-modal">Cancelar</button><button class="button button-primary" type="submit">Salvar tarefa</button></div></form>'
+  );
+}
+
+function docForm(d = null) {
+  const editing = !!d;
+  showModal(editing ? 'Editar documento' : 'Adicionar documento',
+    '<form id="document-form" data-id="' + (d?.id||'') + '">' +
+    '<div class="field"><label for="df-title">Título</label><input class="control" id="df-title" name="title" maxlength="180" required value="' + esc(d?.title) + '"></div>' +
+    '<div class="field"><label for="df-category">Categoria</label><select class="control" id="df-category" name="category">' + options(categoryLabels, d?.category||'outros') + '</select></div>' +
+    '<div class="field"><label for="df-department">Secretaria</label><select class="control" id="df-department" name="departmentId"><option value="">Sem secretaria</option>' + S.departments.map(x => '<option value="' + x.id + '" ' + (String(d?.department_id||'')===String(x.id)?'selected':'') + '>' + esc(x.name) + '</option>').join('') + '</select></div>' +
+    '<div class="field"><label for="df-description">Descrição / Observações</label><textarea class="control" id="df-description" name="description" rows="3" maxlength="5000">' + esc(d?.description) + '</textarea></div>' +
+    '<p class="product-error" role="alert"></p>' +
+    '<div class="product-form-actions"><button type="button" class="button" data-action="close-modal">Cancelar</button><button class="button button-primary" type="submit">' + (editing?'Salvar alterações':'Cadastrar documento') + '</button></div></form>'
+  );
+}
+
+function departmentForm(d = null) {
+  const editing = !!d;
+  showModal(editing ? 'Editar secretaria' : 'Nova secretaria',
+    '<form id="department-form" data-id="' + (d?.id||'') + '">' +
+    '<div class="field"><label for="dep-name">Nome oficial</label><input class="control" id="dep-name" name="name" maxlength="120" required value="' + esc(d?.name) + '"></div>' +
+    '<div class="field"><label for="dep-description">Descrição</label><textarea class="control" id="dep-description" name="description" maxlength="1000" rows="3">' + esc(d?.description) + '</textarea></div>' +
+    '<p class="product-error" role="alert"></p>' +
+    '<div class="product-form-actions"><button type="button" class="button" data-action="close-modal">Cancelar</button><button class="button button-primary" type="submit">' + (editing?'Salvar alterações':'Cadastrar secretaria') + '</button></div></form>'
+  );
+}
+
+// ---- Eventos ----
+app.addEventListener('click', ev => {
+  const pg = ev.target.closest('[data-page]');
+  if (pg) { S.page = pg.dataset.page; draw(); return; }
+
+  const df = ev.target.closest('[data-department-filter]');
+  if (df) { S.page = 'tarefas'; S.taskDepartment = df.dataset.departmentFilter; closeModal(); draw(); return; }
+
+  const ddf = ev.target.closest('[data-document-department-filter]');
+  if (ddf) { S.page = 'documentos'; S.docDepartment = ddf.dataset.documentDepartmentFilter; closeModal(); draw(); return; }
+
+  const et = ev.target.closest('[data-edit-task]');
+  if (et) { const t = S.tasks.find(x => String(x.id) === String(et.dataset.editTask)); if (t) taskForm(t); return; }
+
+  const ed = ev.target.closest('[data-edit-document]');
+  if (ed) { const d = S.docs.find(x => String(x.id) === String(ed.dataset.editDocument)); if (d) docForm(d); return; }
+
+  const ep = ev.target.closest('[data-edit-department]');
+  if (ep) { const d = S.departments.find(x => String(x.id) === String(ep.dataset.editDepartment)); if (d) departmentForm(d); return; }
+
+  const xt = ev.target.closest('[data-delete-task]');
+  if (xt && confirm('Excluir esta tarefa?')) {
+    S.tasks = S.tasks.filter(t => String(t.id) !== String(xt.dataset.deleteTask));
+    saveDB(); toast('Tarefa excluída.'); draw(); return;
+  }
+
+  const xd = ev.target.closest('[data-delete-document]');
+  if (xd && confirm('Excluir este documento?')) {
+    S.docs = S.docs.filter(d => String(d.id) !== String(xd.dataset.deleteDocument));
+    saveDB(); toast('Documento excluído.'); draw(); return;
+  }
+
+  const xp = ev.target.closest('[data-delete-department]');
+  if (xp && confirm('Excluir esta secretaria?')) {
+    S.departments = S.departments.filter(d => String(d.id) !== String(xp.dataset.deleteDepartment));
+    saveDB(); toast('Secretaria excluída.'); draw(); return;
+  }
+
+  const b = ev.target.closest('[data-action]');
+  if (!b) return;
+  if (b.dataset.action === 'menu') { const n = document.getElementById('product-nav'), open = n.classList.toggle('open'); b.setAttribute('aria-expanded', String(open)); }
+  else if (b.dataset.action === 'close-modal') closeModal();
+  else if (b.dataset.action === 'new-task') taskForm();
+  else if (b.dataset.action === 'new-document') docForm();
+  else if (b.dataset.action === 'new-department') departmentForm();
+});
+
+document.addEventListener('click', ev => { if (ev.target.id === 'modal-backdrop') closeModal(); });
+
+app.addEventListener('change', ev => {
+  const t = ev.target;
+  if (t.id === 'task-status') { S.taskStatus = t.value; draw(); }
+  else if (t.id === 'task-priority') { S.taskPriority = t.value; draw(); }
+  else if (t.id === 'task-department') { S.taskDepartment = t.value; draw(); }
+  else if (t.id === 'document-category') { S.docCategory = t.value; draw(); }
+  else if (t.id === 'document-department') { S.docDepartment = t.value; draw(); }
+  else if (t.matches('[data-task-status]')) {
+    const task = S.tasks.find(x => String(x.id) === String(t.dataset.taskStatus));
+    if (task) { task.status = t.value; if (t.value === 'concluida') task.completed_at = new Date().toISOString(); saveDB(); toast('Status atualizado.'); draw(); }
+  }
+});
+
+app.addEventListener('input', ev => {
+  const t = ev.target;
+  if (t.id === 'task-search') { S.taskQuery = t.value; clearTimeout(window.__ts); window.__ts = setTimeout(() => draw(), 300); }
+  if (t.id === 'document-search') { S.docQuery = t.value; clearTimeout(window.__ds); window.__ds = setTimeout(() => draw(), 300); }
+  if (t.id === 'department-search') { S.departmentQuery = t.value; clearTimeout(window.__ps); window.__ps = setTimeout(() => { drawDepartments(); document.getElementById('department-search')?.focus(); }, 150); }
+});
+
+app.addEventListener('submit', ev => {
+  const form = ev.target;
+  if (!['task-form','document-form','department-form'].includes(form.id)) return;
+  ev.preventDefault();
+  const err = form.querySelector('.product-error');
+  const submit = form.querySelector('[type=submit]');
+  if (submit) submit.disabled = true;
+
+  try {
+    const values = Object.fromEntries(new FormData(form));
+
+    if (form.id === 'task-form') {
+      const id = form.dataset.id;
+      if (id) {
+        const idx = S.tasks.findIndex(x => String(x.id) === String(id));
+        if (idx >= 0) {
+          Object.assign(S.tasks[idx], {
+            title: values.title, description: values.description||'',
+            department_id: values.departmentId ? Number(values.departmentId) : null,
+            priority: values.priority, status: values.status,
+            due_at: values.dueAt||null, observations: values.observations||'',
+            updated_at: new Date().toISOString()
+          });
+          if (values.status === 'concluida' && !S.tasks[idx].completed_at) S.tasks[idx].completed_at = new Date().toISOString();
+        }
+        saveDB(); closeModal(); toast('Tarefa atualizada.');
+      } else {
+        S.tasks.push({
+          id: nextId.tasks++, title: values.title, description: values.description||'',
+          department_id: values.departmentId ? Number(values.departmentId) : null,
+          priority: values.priority||'normal', status: values.status||'aberta',
+          due_at: values.dueAt||null, observations: values.observations||'',
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          completed_at: null
+        });
+        saveDB(); closeModal(); toast('Tarefa cadastrada com sucesso!');
+      }
+      S.page = S.page === 'dashboard' ? 'dashboard' : 'tarefas';
+      draw();
+
+    } else if (form.id === 'document-form') {
+      const id = form.dataset.id;
+      if (id) {
+        const idx = S.docs.findIndex(x => String(x.id) === String(id));
+        if (idx >= 0) {
+          Object.assign(S.docs[idx], {
+            title: values.title, category: values.category,
+            department_id: values.departmentId ? Number(values.departmentId) : null,
+            description: values.description||''
+          });
+        }
+        saveDB(); closeModal(); toast('Documento atualizado.');
+      } else {
+        S.docs.push({
+          id: nextId.docs++, title: values.title, category: values.category||'outros',
+          department_id: values.departmentId ? Number(values.departmentId) : null,
+          description: values.description||'', created_at: new Date().toISOString()
+        });
+        saveDB(); closeModal(); toast('Documento cadastrado.');
+      }
+      S.page = S.page === 'dashboard' ? 'dashboard' : 'documentos';
+      draw();
+
+    } else {
+      // department-form
+      const id = form.dataset.id;
+      if (id) {
+        const idx = S.departments.findIndex(x => String(x.id) === String(id));
+        if (idx >= 0) Object.assign(S.departments[idx], { name: values.name, description: values.description||'' });
+        saveDB(); closeModal(); toast('Secretaria atualizada.');
+      } else {
+        if (S.departments.some(d => d.name.trim().toLowerCase() === values.name.trim().toLowerCase())) {
+          if (err) err.textContent = 'Já existe uma secretaria com esse nome.';
+          if (submit) submit.disabled = false;
+          return;
+        }
+        S.departments.push({ id: nextId.departments++, name: values.name, description: values.description||'', created_at: new Date().toISOString(), task_count: 0, document_count: 0 });
+        saveDB(); closeModal(); toast('Secretaria cadastrada.');
+      }
+      draw();
+    }
+  } catch(e) {
+    if (err) err.textContent = e.message; else toast(e.message);
+    if (submit) submit.disabled = false;
+  }
+});
+
+// Inicializar
+loadDB();
+draw();
+</script>
 </body>
 </html>

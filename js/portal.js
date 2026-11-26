@@ -22,42 +22,23 @@ function showError(message) {
 }
 
 function showLogin(error = '', allowLocalPassword = false) {
-  const localPasswordForm = allowLocalPassword ? '<details class="password-login"><summary>Acesso local de desenvolvimento</summary><form id="login-form"><div class="field"><label for="username">Usuário</label><input class="control" id="username" name="username" autocomplete="username" required></div><div class="field"><label for="password">Senha local</label><input class="control" id="password" name="password" type="password" autocomplete="current-password" required></div><p class="form-error" id="login-error" role="alert"></p><button class="button" type="submit" style="width:100%">Entrar no ambiente local</button></form></details>' : '';
-  layout('Acessar o sistema', '<p>Informe o e-mail cadastrado na conta municipal. Enviaremos um link de acesso de uso único; não é necessário digitar senha.</p><form id="magic-link-form"><div class="field"><label for="magic-email">E-mail da conta municipal</label><input class="control" id="magic-email" name="email" type="email" maxlength="254" autocomplete="email" required></div><p class="form-error" id="magic-error" role="alert">' + esc(error) + '</p><button class="button button-primary" type="submit" style="width:100%">Enviar link de acesso</button><p class="form-success" id="magic-success" role="status" aria-live="polite"></p></form>' + localPasswordForm);
-  document.getElementById('magic-link-form').addEventListener('submit', async event => {
+  // Formulário de login com usuário e senha (acesso local direto)
+  const formHtml = '<form id="login-form"><div class="field"><label for="username">Usuário (e-mail)</label><input class="control" id="username" name="username" autocomplete="username" required></div><div class="field"><label for="password">Senha</label><input class="control" id="password" name="password" type="password" autocomplete="current-password" required></div><p class="form-error" id="login-error" role="alert">' + esc(error) + '</p><button class="button button-primary" type="submit" style="width:100%">Entrar no sistema</button></form>';
+  layout('Acessar o sistema', '<p>Informe seu e-mail e senha para acessar o SIGAM.</p>' + formHtml);
+  document.getElementById('login-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
     const button = form.querySelector('[type="submit"]');
-    const errorNode = document.getElementById('magic-error');
-    const successNode = document.getElementById('magic-success');
     button.disabled = true;
-    errorNode.textContent = '';
-    successNode.textContent = '';
     try {
-      const result = await api('/login/magic-link', {method: 'POST', body: JSON.stringify({email: form.elements.email.value})});
-      successNode.textContent = result.message;
+      const session = await api('/login', {method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form)))});
+      csrf = session.csrfToken;
+      window.location.assign('/produtividade.html');
     } catch (err) {
-      errorNode.textContent = err.message;
-    } finally {
+      document.getElementById('login-error').textContent = err.message;
       button.disabled = false;
     }
   });
-  if (allowLocalPassword) {
-    document.getElementById('login-form').addEventListener('submit', async event => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const button = form.querySelector('[type="submit"]');
-      button.disabled = true;
-      try {
-        const session = await api('/login', {method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form)))});
-        csrf = session.csrfToken;
-        window.location.assign('/produtividade.html');
-      } catch (err) {
-        document.getElementById('login-error').textContent = err.message;
-        button.disabled = false;
-      }
-    });
-  }
 }
 
 async function completeMagicLink() {
