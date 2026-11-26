@@ -25,7 +25,7 @@ O projeto mantém o frontend HTML/CSS/JavaScript e o backend Python WSGI. A Verc
    - `SUPABASE_SERVICE_ROLE_KEY`: chave `service_role`/secret, marcada como secreta e nunca prefixada com `VITE_`, `NEXT_PUBLIC_` ou equivalente.
 
 3. Faça o primeiro deploy pela Vercel. Os próximos commits na branch conectada serão publicados automaticamente.
-4. Em **Supabase → Authentication → URL Configuration**, defina o domínio de produção da Vercel como **Site URL**. Se adicionar login por link de e-mail no futuro, inclua também os domínios de Preview nas URLs permitidas.
+4. Em **Supabase → Authentication → URL Configuration**, inclua `https://gestao-interna-prefeitura.vercel.app/portal.html` nas **Redirect URLs** permitidas para o login por link de uso único. Para Preview, inclua apenas domínios de Preview confiáveis; não use um curinga amplo.
 5. Abra `/portal.html`, crie usuários municipais pela administração do sistema e confira login, tarefas, documentos, secretarias e dashboard.
 
 As contas existentes que ainda usam hash scrypt são verificadas localmente uma vez no primeiro login com a senha atual e então vinculadas ao Supabase Auth. Para isso, o nome de usuário precisa ser atualizado para o e-mail da conta no Supabase. Contas sem e-mail válido precisam ser criadas novamente pelo administrador. Senhas não são copiadas em texto puro.

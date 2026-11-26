@@ -21,8 +21,9 @@ function showError(message) {
   document.getElementById('try-again').onclick = init;
 }
 
-function showLogin(error = '') {
-  layout('Acessar o sistema', '<p>Informe o e-mail cadastrado na conta municipal. Enviaremos um link de acesso de uso único; não é necessário digitar senha.</p><form id="magic-link-form"><div class="field"><label for="magic-email">E-mail da conta municipal</label><input class="control" id="magic-email" name="email" type="email" maxlength="254" autocomplete="email" required></div><p class="form-error" id="magic-error" role="alert">' + esc(error) + '</p><button class="button button-primary" type="submit" style="width:100%">Enviar link de acesso</button><p class="form-success" id="magic-success" role="status" aria-live="polite"></p></form>');
+function showLogin(error = '', allowLocalPassword = false) {
+  const localPasswordForm = allowLocalPassword ? '<details class="password-login"><summary>Acesso local de desenvolvimento</summary><form id="login-form"><div class="field"><label for="username">Usuário</label><input class="control" id="username" name="username" autocomplete="username" required></div><div class="field"><label for="password">Senha local</label><input class="control" id="password" name="password" type="password" autocomplete="current-password" required></div><p class="form-error" id="login-error" role="alert"></p><button class="button" type="submit" style="width:100%">Entrar no ambiente local</button></form></details>' : '';
+  layout('Acessar o sistema', '<p>Informe o e-mail cadastrado na conta municipal. Enviaremos um link de acesso de uso único; não é necessário digitar senha.</p><form id="magic-link-form"><div class="field"><label for="magic-email">E-mail da conta municipal</label><input class="control" id="magic-email" name="email" type="email" maxlength="254" autocomplete="email" required></div><p class="form-error" id="magic-error" role="alert">' + esc(error) + '</p><button class="button button-primary" type="submit" style="width:100%">Enviar link de acesso</button><p class="form-success" id="magic-success" role="status" aria-live="polite"></p></form>' + localPasswordForm);
   document.getElementById('magic-link-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -41,6 +42,22 @@ function showLogin(error = '') {
       button.disabled = false;
     }
   });
+  if (allowLocalPassword) {
+    document.getElementById('login-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('[type="submit"]');
+      button.disabled = true;
+      try {
+        const session = await api('/login', {method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form)))});
+        csrf = session.csrfToken;
+        window.location.assign('/produtividade.html');
+      } catch (err) {
+        document.getElementById('login-error').textContent = err.message;
+        button.disabled = false;
+      }
+    });
+  }
 }
 
 async function completeMagicLink() {
@@ -76,7 +93,7 @@ function showSetup() {
         username: form.elements.username.value, name: form.elements.name.value, password,
         departments: document.getElementById('setup-departments').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean),
       })});
-      showLogin('Administrador criado. Entre com as credenciais escolhidas.');
+      showLogin('Administrador criado. Acesse com as credenciais locais escolhidas.', true);
     } catch (error) {
       document.getElementById('setup-error').textContent = error.message;
       button.disabled = false;
@@ -101,7 +118,7 @@ async function init() {
       if (status.needsAdmin) {
         if (status.remoteSetupAllowed) showSetup();
         else showCloudBootstrap();
-      } else showLogin();
+      } else showLogin('', status.remoteSetupAllowed);
     } catch (error) {
       showLogin(error.message);
     }

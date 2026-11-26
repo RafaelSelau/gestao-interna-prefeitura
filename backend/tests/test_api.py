@@ -110,8 +110,10 @@ class APITest(unittest.TestCase):
     @patch("backend.app.urllib.request.urlopen")
     def test_passwordless_login_sends_one_time_link_only_for_active_sigam_account(self, urlopen):
         with database(self.db_path) as db:
+            user_id = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
             db.execute("INSERT INTO employee_profiles(user_id,work_email) VALUES(?,?)",
-                       (1, "admin@example.gov.br"))
+                       (user_id, "admin@example.gov.br"))
+            self.assertIsNotNone(db.execute("SELECT 1 FROM users u JOIN employee_profiles p ON p.user_id=u.id WHERE lower(p.work_email)=? AND u.active=1", ("admin@example.gov.br",)).fetchone())
         response = MagicMock()
         response.__enter__.return_value = response
         urlopen.return_value = response
@@ -136,8 +138,9 @@ class APITest(unittest.TestCase):
     @patch("backend.app.urllib.request.urlopen")
     def test_passwordless_callback_requires_confirmed_email_and_maps_existing_user(self, urlopen):
         with database(self.db_path) as db:
+            user_id = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
             db.execute("INSERT INTO employee_profiles(user_id,work_email) VALUES(?,?)",
-                       (1, "admin@example.gov.br"))
+                       (user_id, "admin@example.gov.br"))
         response = MagicMock()
         response.__enter__.return_value = response
         response.read.return_value = json.dumps({
@@ -153,7 +156,7 @@ class APITest(unittest.TestCase):
         self.assertEqual(result["body"]["username"], "admin")
         self.assertTrue(any(cookie.startswith("sigpm_session=") for cookie in result["set_cookies"]))
         with database(self.db_path) as db:
-            self.assertEqual(db.execute("SELECT auth_user_id FROM users WHERE id=1").fetchone()[0],
+            self.assertEqual(db.execute("SELECT auth_user_id FROM users WHERE username='admin'").fetchone()[0],
                              "auth-user-123")
 
     @patch.dict(os.environ, {
@@ -169,6 +172,26 @@ class APITest(unittest.TestCase):
         result = self.request("POST", "/api/login/complete",
                               {"accessToken": "x" * 40}, authenticated=False)
         self.assertEqual(result["status"], 401)
+
+    def test_vercel_rewrite_restores_api_path_before_authentication_dispatch(self):
+        adapter = VercelAPI()
+        adapter.missing = []
+        adapter._api = self.api
+        environ = {
+            "REQUEST_METHOD": "GET", "PATH_INFO": "/api/index.py",
+            "QUERY_STRING": urllib.parse.urlencode({"__sigpm_path": "/api/setup/status"}),
+            "CONTENT_LENGTH": "0", "wsgi.input": io.BytesIO(b""),
+            "REMOTE_ADDR": "127.0.0.1", "HTTP_COOKIE": "",
+        }
+        result = {}
+
+        def start_response(status, headers):
+            result["status"] = int(status.split()[0])
+
+        body = b"".join(adapter(environ, start_response))
+        result["body"] = json.loads(body)
+        self.assertEqual(result["status"], 200)
+        self.assertTrue(result["body"]["needsAdmin"] is False)
 
     def test_public_entry_shows_postcard_and_dashboard_requires_an_authenticated_session(self):
         health = self.request("GET", "/api/health", authenticated=False)
