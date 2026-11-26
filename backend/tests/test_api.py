@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from api.index import VercelAPI
-from backend.app import API, bootstrap_admin, bootstrap_demo, database
+from backend.app import API, PostgresOperationalError, bootstrap_admin, bootstrap_demo, database
 
 
 class APITest(unittest.TestCase):
@@ -160,16 +160,24 @@ class APITest(unittest.TestCase):
             self.assertTrue(me["body"]["demo"])
             self.assertEqual(call(adapter, "GET", "/api/dashboard", cookie, rewritten=True)["status"], 200)
             self.assertEqual(call(adapter, "GET", "/api/tasks", cookie, rewritten=True)["status"], 200)
+            assignees = call(adapter, "GET", "/api/task-assignees", cookie, rewritten=True)
+            self.assertEqual(assignees["status"], 200)
+            self.assertEqual(assignees["body"][0]["display_name"], "Servidor demonstrativo — Administração")
             self.assertEqual(call(adapter, "GET", "/api/documents", cookie, rewritten=True)["status"], 200)
             self.assertEqual(call(adapter, "GET", "/api/departments", cookie, rewritten=True)["status"], 200)
-            self.assertEqual(call(adapter, "GET", "/api/health", rewritten=True)["body"]["status"], "ok")
+            # Production health checks the database; the demo session remains
+            # independent and reports its own read-only storage mode.
+            self.assertEqual(call(adapter, "GET", "/api/health", rewritten=True)["status"], 503)
+            demo_health = call(adapter, "GET", "/api/health", cookie, rewritten=True)
+            self.assertEqual(demo_health["status"], 200)
+            self.assertEqual(demo_health["body"]["storageMode"], "demo")
             demo_link = call(adapter, "GET", "/api/demo/start", rewritten=True)
             self.assertEqual(demo_link["status"], 303)
             self.assertEqual(demo_link["headers"]["Location"], "/produtividade.html")
             self.assertIn("sigpm_demo_session=", demo_link["headers"]["Set-Cookie"])
             page = call(adapter, "GET", "/produtividade.html", cookie)
             self.assertEqual(page["status"], 200)
-            self.assertIsNone(adapter._api)
+            self.assertIsNotNone(adapter._api)
 
     def test_demo_session_is_read_only_and_logout_clears_it(self):
         login = self.request("POST", "/api/demo/login", {}, authenticated=False)
@@ -190,7 +198,7 @@ class APITest(unittest.TestCase):
     def test_public_entry_shows_postcard_and_dashboard_requires_an_authenticated_session(self):
         health = self.request("GET", "/api/health", authenticated=False)
         self.assertEqual(health["status"], 200)
-        self.assertEqual(health["body"]["apiVersion"], "sigpm-dashboard-v1")
+        self.assertEqual(health["body"]["apiVersion"], "sigam-dashboard-v2")
         entry = self.request("GET", "/", authenticated=False)
         self.assertEqual(entry["status"], 200)
         self.assertIn("SIGAM — Sistema Integrado de Gestão e Administração Municipal".encode(), entry["body"])
@@ -225,8 +233,16 @@ class APITest(unittest.TestCase):
         private_page = self.request("GET", "/produtividade.html", authenticated=False)
         self.assertEqual(private_page["status"], 302)
         self.assertEqual(private_page["headers"]["Location"], "/portal.html")
+        for route in ("/dashboard", "/tarefas", "/documentos", "/secretarias"):
+            route_response = self.request("GET", route, authenticated=False)
+            self.assertEqual(route_response["status"], 302, route)
+            self.assertEqual(route_response["headers"]["Location"], "/portal.html", route)
         self.assertFalse(self.request("GET", "/api/setup/status", authenticated=False)["body"]["demoConfigured"])
         self.login()
+        for route in ("/dashboard", "/tarefas", "/documentos", "/secretarias"):
+            route_response = self.request("GET", route)
+            self.assertEqual(route_response["status"], 200, route)
+            self.assertIn(b'id="productivity"', route_response["body"], route)
         authenticated = self.request("GET", "/index.html")
         self.assertEqual(authenticated["status"], 200)
         self.assertIn(b"SIGAM", authenticated["body"])
@@ -268,6 +284,28 @@ class APITest(unittest.TestCase):
         self.assertEqual(setup["status"], 201)
         departments = self.request("GET", "/api/public/departments", authenticated=False)["body"]
         self.assertEqual([item["name"] for item in departments], ["Cultura", "Obras"])
+
+    def test_unexpected_api_errors_are_logged_without_payload_details(self):
+        self.login()
+        error = RuntimeError("private task details must not be logged")
+        error.sqlstate = "42703"
+        with patch.object(self.api, "dispatch", side_effect=error):
+            with self.assertLogs(level="ERROR") as captured:
+                response = self.request("POST", "/api/tasks", {"title": "Tarefa de teste"})
+        self.assertEqual(response["status"], 500)
+        self.assertIn("RuntimeError", captured.output[0])
+        self.assertIn("SQLSTATE=42703", captured.output[0])
+        self.assertIn("path=/api/tasks", captured.output[0])
+        self.assertNotIn("private task details", captured.output[0])
+
+    def test_database_connection_logs_safe_failure_category(self):
+        error = PostgresOperationalError("password authentication failed: secret-value")
+        with patch("backend.app.database", side_effect=error):
+            with self.assertLogs(level="ERROR") as captured:
+                response = self.request("GET", "/api/health", authenticated=False)
+        self.assertEqual(response["status"], 503)
+        self.assertIn("category=authentication_failed", captured.output[0])
+        self.assertNotIn("secret-value", captured.output[0])
 
     def test_role_permission_is_checked_by_api(self):
         self.login()
@@ -344,10 +382,21 @@ class APITest(unittest.TestCase):
         self.assertEqual(profile["body"]["job_title"], "Analista")
         self.assertEqual(self.request("GET", "/api/profile")["body"]["full_name"], "Servidor Teste")
 
+        with database(self.db_path) as db:
+            assigned = db.execute("INSERT INTO users(username,display_name,password_hash,role) VALUES(?,?,?,'consulta')",
+                                  ("servidora", "Servidora Responsável", "disabled$test"))
+            assigned_id = assigned.lastrowid
+        assignees = self.request("GET", "/api/task-assignees")
+        self.assertEqual(assignees["status"], 200)
+        self.assertTrue(any(row["id"] == assigned_id for row in assignees["body"]))
         task = self.request("POST", "/api/tasks", {"title": "Preparar relatório", "description": "Fechar números do mês",
-            "category": "Relatório", "priority": "urgente", "dueAt": "2020-01-01T09:00", "status": "aberta"})
+            "category": "Relatório", "priority": "urgente", "dueAt": "2020-01-01T09:00", "status": "aberta",
+            "assignedUserId": assigned_id})
         self.assertEqual(task["status"], 201)
         task_id = task["body"]["id"]
+        self.assertEqual(task["body"]["assigned_user_id"], assigned_id)
+        self.assertEqual(task["body"]["assigned_name"], "Servidora Responsável")
+        self.assertEqual(self.request("GET", f"/api/tasks/{task_id}")["body"]["assigned_name"], "Servidora Responsável")
         self.assertEqual(self.request("PUT", f"/api/tasks/{task_id}", {"status": "em_andamento"})["body"]["status"], "em_andamento")
         completed = self.request("PUT", f"/api/tasks/{task_id}", {"status": "concluida"})["body"]
         self.assertTrue(completed["completed_at"])
@@ -359,7 +408,6 @@ class APITest(unittest.TestCase):
         self.assertEqual(dashboard["nextAction"]["id"], task_id)
         self.assertGreaterEqual(len(self.request("GET", f"/api/tasks/{task_id}/history")["body"]), 4)
         self.assertEqual(len(self.request("GET", "/api/tasks?q=relatório&priority=urgente")["body"]), 1)
-
         meeting = self.request("POST", "/api/events", {"kind": "reuniao", "title": "Reunião de planejamento",
             "startsAt": "2099-03-14T10:00", "endsAt": "2099-03-14T11:00", "agenda": "Prioridades", "participants": "Equipe"})
         self.assertEqual(meeting["status"], 201)
@@ -386,9 +434,21 @@ class APITest(unittest.TestCase):
         download = self.request("GET", f"/api/documents/{document_id}/download")
         self.assertEqual(download["status"], 200)
         self.assertEqual(download["body"], file_content)
+        with database(self.db_path) as db:
+            stored = db.execute("SELECT stored_name,user_id FROM personal_documents WHERE id=?", (document_id,)).fetchone()
+        stored_path = Path(self.temp.name) / "private_files" / str(stored["user_id"]) / stored["stored_name"]
+        stored_path.unlink()
+        missing_download = self.request("GET", f"/api/documents/{document_id}/download")
+        self.assertEqual(missing_download["status"], 404)
+        self.assertIn("armazenamento local", missing_download["body"]["error"])
         notices = self.request("GET", "/api/notifications")["body"]
         self.assertTrue(any(n["kind"] == "documento_atencao" for n in notices))
         self.assertTrue(any(n["kind"] == "tarefa_atrasada" for n in notices))
+        archived = self.request("DELETE", f"/api/tasks/{task_id}")
+        self.assertEqual(archived["status"], 200)
+        self.assertTrue(archived["body"]["archived"])
+        self.assertEqual(self.request("GET", f"/api/tasks/{task_id}")["status"], 404)
+        self.assertEqual(self.request("GET", "/api/tasks?q=relatório&priority=urgente")["body"], [])
         read_id = next(n["id"] for n in notices if n["kind"] == "documento_atencao")
         self.assertEqual(self.request("POST", f"/api/notifications/{read_id}/read", {})["status"], 200)
         self.assertEqual(self.request("GET", f"/api/search?q=encaminhamentos")["body"]["events"][0]["id"], event_id)

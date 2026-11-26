@@ -8,10 +8,11 @@ O projeto mantém o frontend HTML/CSS/JavaScript e o backend Python WSGI. A Verc
 
 1. Crie um projeto Supabase e escolha a região mais próxima dos usuários.
 2. No **SQL Editor**, execute `supabase/migrations/202611120001_sigam_schema.sql`. A migração cria as tabelas atuais e legadas, relacionamentos, índices, RLS e o bucket privado `sigam-documentos`.
-3. Em **Authentication → Providers → Email**, mantenha o cadastro público desativado. O sistema cria usuários pelo backend administrativo.
-4. Em **Project Settings → Database → Connection string**, copie a URL do **Transaction pooler** (porta 6543) para `DATABASE_URL`. Substitua a senha de exemplo do `.env.example` pela senha do banco.
-5. Em **Project Settings → API**, copie a URL do projeto e a chave publicável/anon. A chave `service_role` é secreta: ficará somente nas variáveis server-side da Vercel.
-6. Crie a conta do primeiro administrador em **Authentication → Users → Add user**. Depois abra `supabase/bootstrap_admin.sql`, troque o e-mail e o nome de exemplo e execute no **SQL Editor**. Atualize a página de login e entre com esse e-mail.
+3. Execute também `supabase/migrations/202611260001_task_assignee.sql` para habilitar a atribuição de tarefas a servidores.
+4. Em **Authentication → Providers → Email**, mantenha o cadastro público desativado. O sistema cria usuários pelo backend administrativo.
+5. Em **Project Settings → Database → Connection string**, copie a URL do **Transaction pooler** (porta 6543) para `DATABASE_URL`. Substitua a senha de exemplo do `.env.example` pela senha do banco.
+6. Em **Project Settings → API**, copie a URL do projeto e a chave publicável/anon. A chave `service_role` é secreta: ficará somente nas variáveis server-side da Vercel.
+7. Crie a conta do primeiro administrador em **Authentication → Users → Add user**. Depois abra `supabase/bootstrap_admin.sql`, troque o e-mail e o nome de exemplo e execute no **SQL Editor**. Atualize a página de login e entre com esse e-mail.
 
 ### Configurar a Vercel
 
@@ -60,11 +61,11 @@ py backend/server.py --host 127.0.0.1 --port 8001
 
 Abra `http://127.0.0.1:8001/` para a página institucional do SIGAM e selecione **Acessar o sistema**. O login (ou a configuração inicial local, se ainda não houver administrador) fica em `/portal.html`. Após autenticar, o sistema abre o dashboard em `/produtividade.html`. O menu principal contém apenas **Dashboard**, **Tarefas**, **Documentos**, **Secretarias** e **Sair da conta**. `/index.html` e `/welcome.html` redirecionam à raiz. Se a porta estiver ocupada, escolha outra porta e use-a nos endereços. Para encerrar, pressione **Ctrl+C**. O banco SQLite é criado em `backend/sigpm.sqlite3`; não publique esse arquivo.
 
-Se uma instância antiga do servidor já estiver usando a porta `8001`, pare-a com **Ctrl+C** no terminal dela e execute novamente o comando acima. O painel verifica a versão da API e mostra essa orientação se as rotas atuais de tarefas, dashboard e secretarias não estiverem disponíveis.
+Se uma instância antiga do servidor já estiver usando a porta `8001`, pare-a com **Ctrl+C** no terminal dela e execute novamente o comando acima. O painel verifica a versão da API e mostra uma orientação explícita quando frontend e backend estão em versões diferentes.
 
 As páginas internas exigem uma sessão válida no servidor integrado. O sistema não usa `localStorage` para tarefas, documentos ou dados de dashboard.
 
-Rotas principais do painel: `GET /api/dashboard`, CRUD de `/api/tasks`, `/api/documents` e `/api/departments`. Login retorna cookie de sessão HttpOnly e token CSRF. Operações internas de escrita exigem o token no cabeçalho `X-CSRF-Token`. Outras rotas e tabelas antigas permanecem no backend para compatibilidade e preservação dos registros existentes.
+Rotas principais do painel: `/dashboard`, `/tarefas`, `/documentos` e `/secretarias` carregam o shell autenticado e continuam válidas após atualização direta do navegador. A API oferece `GET /api/dashboard`, CRUD de `/api/tasks`, `/api/documents` e `/api/departments`. Login retorna cookie de sessão HttpOnly e token CSRF. Operações internas de escrita exigem o token no cabeçalho `X-CSRF-Token`. Outras rotas e tabelas antigas permanecem no backend para compatibilidade e preservação dos registros existentes.
 
 O administrador inicial é criado pelo formulário local de `/portal.html` ou pelo comando `--create-admin`. A tela de Secretarias permite cadastro, edição e exclusão para administradores. Uma secretaria só pode ser excluída se não tiver vínculos com setores, usuários, demandas, tarefas ou documentos.
 
@@ -74,7 +75,7 @@ Os testes da API rodam com `py -m unittest discover -s backend/tests -t . -v`.
 
 Na tela de acesso, **Entrar com conta de demonstração** cria uma sessão assinada pelo backend, sem usuário, e-mail ou senha. Em produção, a assinatura é derivada no servidor de `SUPABASE_SERVICE_ROLE_KEY` (ou use um segredo independente em `SIGPM_DEMO_SESSION_SECRET`). Essa chave nunca é enviada ao navegador. A sessão usa cookie `HttpOnly`, SameSite, CSRF e expira em duas horas; sair encerra o cookie. O login normal e a configuração administrativa continuam separados.
 
-Os módulos demonstrativos usam somente os registros fictícios em `backend/demo_data.py`. As rotas de demonstração não abrem conexão com PostgreSQL/Supabase, permitem apenas leitura e devolvem 403 para gravações. Os registros reais e as tabelas existentes ficam fora desse fluxo. Para testes locais, execute a API padrão em `http://127.0.0.1:8000/`; não use o servidor estático da porta 5500 para testar rotas `/api`.
+Os módulos demonstrativos usam somente registros fictícios em `backend/demo_data.py`. A lista demonstrativa de tarefas permite criar, editar e excluir itens no `sessionStorage` da aba; essas alterações não são enviadas ao PostgreSQL/Supabase e desaparecem ao encerrar a sessão da aba. As demais rotas demonstrativas não abrem conexão com o banco e recusam gravações. Para testes locais, execute a API padrão em `http://127.0.0.1:8000/`; não use o servidor estático da porta 5500 para testar rotas `/api`.
 
 O bootstrap opcional abaixo continua disponível para quem precisa testar a autenticação local com senha em uma base SQLite totalmente separada:
 

@@ -90,9 +90,10 @@ class VercelAPI:
         if not path.startswith("/api/"):
             return self._static_response(environ, start_response)
 
-        # Health and demo sessions are self-contained and do not need the
-        # production database. This keeps demonstrations usable during a DB outage.
-        if (path == "/api/health" or path == "/api/demo/login" or path == "/api/demo/start"
+        # Demo sessions are self-contained and do not need the production database.
+        # The health endpoint deliberately goes through the DB-backed API so it
+        # reports readiness, not only that this function was invoked.
+        if (path == "/api/demo/login" or path == "/api/demo/start"
                 or self._static.authenticate_demo(environ)):
             return self._static(environ, start_response)
 

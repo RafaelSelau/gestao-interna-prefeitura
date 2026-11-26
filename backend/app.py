@@ -29,12 +29,8 @@ from urllib.parse import parse_qs, quote
 
 try:
     from backend.database import PostgresConnection
-    from backend.demo_data import dashboard as demo_dashboard, departments as demo_departments, documents as demo_documents
-    from backend.demo_data import filter_documents as demo_filter_documents, filter_tasks as demo_filter_tasks, tasks as demo_tasks
 except ImportError:  # local `python backend/server.py` entry point
     from database import PostgresConnection
-    from demo_data import dashboard as demo_dashboard, departments as demo_departments, documents as demo_documents
-    from demo_data import filter_documents as demo_filter_documents, filter_tasks as demo_filter_tasks, tasks as demo_tasks
 
 try:
     from psycopg import IntegrityError as PostgresIntegrityError
@@ -89,6 +85,25 @@ def connect(path: str | Path):
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
     return db
+
+
+def database_error_category(error: BaseException) -> str:
+    """Return a safe diagnostic class without logging DSNs or raw driver text."""
+    message = str(error).casefold()
+    patterns = (
+        (("password authentication failed", "no password supplied", "authentication failed"), "authentication_failed"),
+        (("could not translate host name", "name or service not known", "temporary failure in name resolution"), "dns_resolution_failed"),
+        (("connection refused",), "connection_refused"),
+        (("timeout expired", "connection timeout", "timed out"), "connection_timeout"),
+        (("network is unreachable", "no route to host"), "network_unreachable"),
+        (("too many connections", "remaining connection slots are reserved"), "connection_capacity_reached"),
+        (("does not exist", "unknown database"), "database_not_found"),
+        (("ssl", "tls"), "tls_connection_failed"),
+    )
+    for fragments, category in patterns:
+        if any(fragment in message for fragment in fragments):
+            return category
+    return "unknown"
 
 
 @contextmanager
@@ -173,6 +188,7 @@ def initialize(path: str | Path) -> None:
         );
         CREATE TABLE IF NOT EXISTS personal_tasks (
           id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
           title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'Geral',
           start_at TEXT, due_at TEXT, priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('baixa','normal','alta','urgente')),
           status TEXT NOT NULL DEFAULT 'aberta' CHECK(status IN ('aberta','em_andamento','aguardando','concluida','cancelada')),
@@ -243,6 +259,8 @@ def initialize(path: str | Path) -> None:
         task_columns = {row["name"] for row in db.execute("PRAGMA table_info(personal_tasks)")}
         if "department_id" not in task_columns:
             db.execute("ALTER TABLE personal_tasks ADD COLUMN department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL")
+        if "assigned_user_id" not in task_columns:
+            db.execute("ALTER TABLE personal_tasks ADD COLUMN assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
         department_columns = {row["name"] for row in db.execute("PRAGMA table_info(departments)")}
         if "description" not in department_columns:
             db.execute("ALTER TABLE departments ADD COLUMN description TEXT NOT NULL DEFAULT ''")
@@ -330,30 +348,22 @@ class API:
                 for key, values in parse_qs(environ["QUERY_STRING"], keep_blank_values=True).items():
                     body[key] = values[-1] if values else ""
             if method == "GET" and path == "/api/health":
-                return self.respond(start_response, 200, {
-                    "status": "ok", "service": "SIGPM API", "apiVersion": "sigpm-dashboard-v1",
-                    "storageMode": "demo" if self.authenticate_demo(environ) else ("supabase" if not self.db_path else "local"),
-                })
-            if method == "POST" and path == "/api/demo/login":
-                return self.demo_login(start_response)
-            if method == "GET" and path == "/api/demo/start":
-                return self.demo_login(start_response, redirect=True)
-            demo_session = self.authenticate_demo(environ)
-            if demo_session:
-                return self.demo_dispatch(method, path, body, environ, demo_session, start_response)
+                # Health must verify the backing store. In production this
+                # executes against PostgreSQL inside the same request-scoped
+                # connection lifecycle used by the rest of the API.
             with database(self.db_path) as db:
+                if method == "GET" and path == "/api/health":
+                    db.execute("SELECT 1").fetchone()
+                    return self.respond(start_response, 200, {
+                        "status": "ok", "service": "SIGPM API", "apiVersion": "sigam-dashboard-v2",
+                        "storageMode": "supabase" if not self.db_path else "local",
+                    })
                 if path.startswith("/api/public/"):
                     return self.public_dispatch(db, method, path, body, environ, start_response)
                 if method == "GET" and path == "/api/setup/status":
                     configured = bool(db.execute("SELECT 1 FROM users WHERE active=1 LIMIT 1").fetchone())
-                    demo_configured = bool(db.execute("""SELECT 1 FROM system_flags f
-                        WHERE f.flag='demo_seeded' AND f.value='complete' AND EXISTS (
-                          SELECT 1 FROM users u JOIN employee_profiles p ON p.user_id=u.id
-                          WHERE u.active=1 AND u.role='consulta' AND instr(u.username,'@')>1
-                            AND p.work_email=u.username
-                        ) LIMIT 1""").fetchone())
                     return self.respond(start_response, 200, {"needsAdmin": not configured,
-                        "demoConfigured": demo_configured, "remoteSetupAllowed": bool(self.db_path)})
+                        "remoteSetupAllowed": bool(self.db_path)})
                 if method == "POST" and path == "/api/setup/admin":
                     if environ.get("REMOTE_ADDR") not in ("127.0.0.1", "::1"):
                         return self.respond(start_response, 403, {"error": "A configuração inicial só pode ser feita localmente."})
@@ -403,12 +413,21 @@ class API:
             return self.respond(start_response, 409, {"error": "Conflito de dados: verifique duplicidade e vínculos.", "detail": str(error)})
         except PostgresOperationalError as error:
             sqlstate = getattr(error, "sqlstate", None) or "unavailable"
-            logging.error("SIGAM database request failed (%s, SQLSTATE=%s).",
-                          type(error).__name__, sqlstate)
+            cause = error.__cause__ or error.__context__
+            cause_name = type(cause).__name__ if cause is not None else "none"
+            cause_errno = getattr(cause, "errno", None)
+            category = database_error_category(error)
+            logging.error("SIGAM database request failed (%s, SQLSTATE=%s, category=%s, cause=%s, errno=%s).",
+                          type(error).__name__, sqlstate, category, cause_name, cause_errno)
             return self.respond(start_response, 503, {
                 "error": "Banco de dados temporariamente indisponível. Tente novamente em instantes."
             }, [("Retry-After", "30")])
-        except Exception:
+        except Exception as error:
+            # Keep Vercel diagnostics useful without exposing exception text,
+            # SQL values, credentials, or task content in platform logs.
+            sqlstate = getattr(error, "sqlstate", None) or "unknown"
+            logging.error("SIGAM request failed (%s, SQLSTATE=%s, method=%s, path=%s).",
+                          type(error).__name__, sqlstate, method, path)
             return self.respond(start_response, 500, {"error": "Erro interno. Consulte os registros do servidor."})
 
     def static(self, environ, start_response):
@@ -423,9 +442,14 @@ class API:
         if request_path == "/**":
             start_response("302 Found", [("Location", "/"), ("Cache-Control", "no-store"), ("Content-Length", "0")])
             return [b""]
+        if request_path.rstrip("/") in {"/dashboard", "/tarefas", "/documentos", "/secretarias"}:
+            # These app routes are client-rendered from one authenticated shell.
+            # Serving that shell at each route also makes direct loads/refreshes work.
+            rel = "produtividade.html"
+        else:
+            rel = request_path.lstrip("/") or "index.html"
         # Keep the real root document as the entry point. index.html mirrors
         # the public welcome page used by the production Vercel rewrite.
-        rel = request_path.lstrip("/") or "index.html"
         target = (ROOT / rel).resolve()
         if target == (ROOT / "produtividade.html").resolve():
             user = self.authenticate_demo(environ)
@@ -440,7 +464,12 @@ class API:
         private_root = (ROOT / "backend").resolve()
         if (ROOT not in target.parents and target != ROOT) or private_root in target.parents or target == private_root or not target.is_file():
             return self.respond(start_response, 404, {"error": "Arquivo não encontrado."})
-        content = target.read_bytes()
+        try:
+            content = target.read_bytes()
+        except PermissionError:
+            return self.respond(start_response, 403, {"error": "Sem permissão para ler este arquivo."})
+        except OSError:
+            return self.respond(start_response, 500, {"error": "Não foi possível ler este arquivo no servidor."})
         mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if mime.startswith("text/") or mime in {"application/javascript", "application/json", "application/xml", "image/svg+xml"}:
             mime += "; charset=utf-8"
@@ -585,6 +614,12 @@ class API:
                                     department or {"error": "Secretaria demonstrativa não encontrada."})
         if path == "/api/tasks":
             return self.respond(start_response, 200, demo_filter_tasks(body))
+        if path == "/api/task-assignees":
+            return self.respond(start_response, 200, [
+                {"id": 9801, "display_name": "Servidor demonstrativo — Administração"},
+                {"id": 9802, "display_name": "Servidor demonstrativo — Obras"},
+                {"id": 9803, "display_name": "Servidor demonstrativo — Educação"},
+            ])
         if path.startswith("/api/tasks/"):
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[2].isdigit():
@@ -695,6 +730,8 @@ class API:
         return "*" in permissions or permission in permissions
 
     def dispatch(self, db, method, path, body, user, start_response):
+        if path == "/api/task-assignees" and method == "GET":
+            return self.list_task_assignees(db, start_response)
         if path == "/api/profile" and method in ("GET", "PUT"):
             return self.profile(db, method, body, user, start_response)
         if path == "/api/dashboard" and method == "GET":
@@ -1353,8 +1390,14 @@ class API:
         order = "CASE t.priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,COALESCE(t.due_at,'9999'),t.created_at DESC"
         if body.get("sort") == "prazo": order = "COALESCE(t.due_at,'9999'),CASE t.priority WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END"
         if body.get("sort") == "recentes": order = "t.created_at DESC"
-        rows = [dict(row) for row in db.execute(f"SELECT t.*,d.name AS department_name FROM personal_tasks t LEFT JOIN departments d ON d.id=t.department_id WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT 500", values)]
+        rows = [dict(row) for row in db.execute(f"SELECT t.*,d.name AS department_name,u.display_name AS assigned_name FROM personal_tasks t LEFT JOIN departments d ON d.id=t.department_id LEFT JOIN users u ON u.id=t.assigned_user_id WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT 500", values)]
         return self.respond(start_response, 200, rows)
+
+    @staticmethod
+    def list_task_assignees(db, start_response):
+        rows = [dict(row) for row in db.execute(
+            "SELECT id,display_name FROM users WHERE active=1 ORDER BY display_name")]
+        return API.respond(start_response, 200, rows)
 
     def get_task(self, db, task_id, user, start_response):
         row = self._personal_task(db, task_id, user["id"])
@@ -1364,6 +1407,10 @@ class API:
         if data.get("department_id"):
             department = db.execute("SELECT name FROM departments WHERE id=?", (data["department_id"],)).fetchone()
             data["department_name"] = department["name"] if department else None
+        if data.get("assigned_user_id"):
+            assignee = db.execute("SELECT display_name FROM users WHERE id=? AND active=1",
+                                  (data["assigned_user_id"],)).fetchone()
+            data["assigned_name"] = assignee["display_name"] if assignee else None
         data["documents"] = [dict(item) for item in db.execute("SELECT id,title,category,original_name FROM personal_documents WHERE linked_task_id=? AND user_id=? AND active=1", (task_id,user["id"]))]
         return self.respond(start_response, 200, data)
 
@@ -1373,7 +1420,7 @@ class API:
             return self.respond(start_response, 404, {"error": "Tarefa não encontrada."})
         if method != "POST" and method in ("PUT","PATCH"):
             data = dict(current)
-            aliases = {"title":"title","description":"description","category":"category","startAt":"start_at","dueAt":"due_at","priority":"priority","status":"status","observations":"observations","departmentId":"department_id"}
+            aliases = {"title":"title","description":"description","category":"category","startAt":"start_at","dueAt":"due_at","priority":"priority","status":"status","observations":"observations","departmentId":"department_id","assignedUserId":"assigned_user_id"}
             for key, column in aliases.items():
                 if key in body: data[column] = body[key]
         else:
@@ -1381,7 +1428,8 @@ class API:
                 "category": body.get("category", "Geral"), "start_at": body.get("startAt"),
                 "due_at": body.get("dueAt"), "priority": body.get("priority", "normal"),
                 "status": body.get("status", "aberta"), "observations": body.get("observations", ""),
-                "department_id": body.get("departmentId") or None}
+                "department_id": body.get("departmentId") or None,
+                "assigned_user_id": body.get("assignedUserId") or user["id"]}
         title = str(data.get("title") or "").strip(); description = str(data.get("description") or "").strip()
         category = str(data.get("category") or "Geral").strip(); observations = str(data.get("observations") or "").strip()
         priority, status = data.get("priority"), data.get("status")
@@ -1408,6 +1456,14 @@ class API:
             department_id = int(department_id)
         else:
             department_id = None
+        assigned_user_id = data.get("assigned_user_id")
+        if assigned_user_id not in (None, ""):
+            if not str(assigned_user_id).isdigit() or not db.execute(
+                    "SELECT 1 FROM users WHERE id=? AND active=1", (int(assigned_user_id),)).fetchone():
+                raise ValueError("Selecione um servidor ativo cadastrado.")
+            assigned_user_id = int(assigned_user_id)
+        else:
+            assigned_user_id = None
         completed_at = current["completed_at"] if current else None
         if status == "concluida" and old_status != "concluida": completed_at = datetime.now().isoformat(timespec="seconds")
         if status != "concluida": completed_at = None
@@ -1417,19 +1473,26 @@ class API:
                 raise ValueError("A reunião de origem não pertence à sua conta.")
             source = int(source)
         if task_id:
-            db.execute("UPDATE personal_tasks SET title=?,description=?,category=?,start_at=?,due_at=?,priority=?,status=?,observations=?,source_event_id=?,department_id=?,completed_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
-                (title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,department_id,completed_at,task_id,user["id"]))
+            db.execute("UPDATE personal_tasks SET title=?,description=?,category=?,start_at=?,due_at=?,priority=?,status=?,observations=?,source_event_id=?,department_id=?,assigned_user_id=?,completed_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+                (title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,department_id,assigned_user_id,completed_at,task_id,user["id"]))
             action = "status" if old_status != status else "edit"
             db.execute("INSERT INTO personal_task_events(task_id,user_id,action,details) VALUES(?,?,?,?)", (task_id,user["id"],action,json.dumps({"from":old_status,"to":status},ensure_ascii=False)))
             self._activity(db,user["id"],"task",task_id,"edit",f"Tarefa atualizada: {title}")
         else:
-            cur = db.execute("INSERT INTO personal_tasks(user_id,title,description,category,start_at,due_at,priority,status,observations,source_event_id,department_id,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (user["id"],title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,department_id,completed_at))
+            cur = db.execute("INSERT INTO personal_tasks(user_id,title,description,category,start_at,due_at,priority,status,observations,source_event_id,department_id,assigned_user_id,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (user["id"],title,description,category,dates["start_at"],dates["due_at"],priority,status,observations,source,department_id,assigned_user_id,completed_at))
             task_id = cur.lastrowid
             db.execute("INSERT INTO personal_task_events(task_id,user_id,action,details) VALUES(?,?,?,?)",(task_id,user["id"],"created","{}"))
             self._activity(db,user["id"],"task",task_id,"create",f"Tarefa criada: {title}")
         record_audit(db,user["id"],"save_task","personal_task",task_id,{"status":status,"priority":priority})
-        return self.get_task(db,task_id,user,start_response) if method != "POST" and method in ("PUT","PATCH") else self.respond(start_response,201,dict(self._personal_task(db,task_id,user["id"])))
+        if method != "POST" and method in ("PUT", "PATCH"):
+            return self.get_task(db, task_id, user, start_response)
+        saved = dict(self._personal_task(db, task_id, user["id"]))
+        if saved.get("assigned_user_id"):
+            assignee = db.execute("SELECT display_name FROM users WHERE id=? AND active=1",
+                                  (saved["assigned_user_id"],)).fetchone()
+            saved["assigned_name"] = assignee["display_name"] if assignee else None
+        return self.respond(start_response, 201, saved)
 
     def archive_task(self, db, task_id, user, start_response):
         task = self._personal_task(db,task_id,user["id"])
@@ -1643,9 +1706,17 @@ class API:
         mime=mimetypes.guess_type(filename)[0] or "application/octet-stream"
         file_path = None
         if self.db_path:
-            directory=self.db_path.parent/"private_files"/str(user["id"]); directory.mkdir(parents=True,exist_ok=True)
+            directory=self.db_path.parent/"private_files"/str(user["id"])
             file_path=directory/stored
-            file_path.write_bytes(raw)
+            try:
+                directory.mkdir(parents=True,exist_ok=True)
+                temporary=directory/(stored+".tmp")
+                temporary.write_bytes(raw)
+                temporary.replace(file_path)
+            except PermissionError:
+                raise PermissionError("Sem permissão para salvar o arquivo no armazenamento local.") from None
+            except OSError:
+                raise RuntimeError("Não foi possível salvar o arquivo no armazenamento local.") from None
         elif not direct_stored:
             self.storage_request("POST", user, stored, raw, mime)
         try:
@@ -1700,14 +1771,20 @@ class API:
         if not row: return self.respond(start_response,404,{"error":"Documento não encontrado."})
         filename=str(row["original_name"]).replace("\r","").replace("\n","").replace('"',"'")
         if not self.db_path:
-            location = self.storage_signed_download_url(user, row["stored_name"], filename)
-            start_response("302 Found", [("Location", location), ("Cache-Control", "no-store"),
-                                          ("Content-Length", "0"), ("X-Content-Type-Options", "nosniff")])
-            return [b""]
-        target=(self.db_path.parent/"private_files"/str(user["id"])/row["stored_name"]).resolve()
-        expected=(self.db_path.parent/"private_files"/str(user["id"])).resolve()
-        if expected not in target.parents or not target.is_file(): return self.respond(start_response,404,{"error":"Arquivo não encontrado."})
-        payload=target.read_bytes()
+            try:
+                payload = self.storage_request("GET", user, row["stored_name"])
+            except FileNotFoundError:
+                return self.respond(start_response,404,{"error":"Arquivo não encontrado no armazenamento privado. O registro existe, mas o objeto não foi localizado no bucket SIGAM."})
+        else:
+            target=(self.db_path.parent/"private_files"/str(user["id"])/row["stored_name"]).resolve()
+            expected=(self.db_path.parent/"private_files"/str(user["id"])).resolve()
+            if expected not in target.parents or not target.is_file(): return self.respond(start_response,404,{"error":"Arquivo não encontrado no armazenamento local. O registro existe, mas o arquivo não está no diretório privado esperado."})
+            try:
+                payload=target.read_bytes()
+            except PermissionError:
+                return self.respond(start_response,403,{"error":"Sem permissão para ler o arquivo no armazenamento local."})
+            except OSError:
+                return self.respond(start_response,500,{"error":"Não foi possível ler o arquivo no armazenamento local."})
         start_response("200 OK",[("Content-Type",row["mime_type"]),("Content-Length",str(len(payload))),
             ("Content-Disposition",f"attachment; filename=\"arquivo\"; filename*=UTF-8''{quote(filename)}"),
             ("Cache-Control","no-store"),("X-Content-Type-Options","nosniff")])

@@ -11,7 +11,8 @@ from app import API, DEFAULT_DB, INITIAL_DEPARTMENTS, bootstrap_admin, bootstrap
 def main():
     parser = argparse.ArgumentParser(description="Servidor local da API SIGPM")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    # Keep the default aligned with the documented Windows/local URL and frontend.
+    parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--create-admin", action="store_true", help="cria o primeiro administrador e encerra")
     parser.add_argument("--create-demo", action="store_true", help="prepara uma base SQLite isolada com contas e dados fictícios e encerra")

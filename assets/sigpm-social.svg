@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#edf5fc"/><stop offset="1" stop-color="#d8e8f1"/></linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#2c74c5"/><stop offset="1" stop-color="#173b67"/></linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1010" cy="110" r="165" fill="#fff" opacity=".45"/>
+  <rect x="70" y="70" width="1060" height="490" rx="34" fill="#fff"/>
+  <rect x="110" y="110" width="72" height="72" rx="20" fill="url(#panel)"/>
+  <path d="M128 163h36m-32 0v-30l14-11 14 11v30m-20-22h3m8 0h3m-14 9h3m8 0h3m-8 13v-8h8v8" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+  <text x="204" y="142" fill="#193957" font-family="Arial,sans-serif" font-size="29" font-weight="800" letter-spacing="4">SIGPM</text>
+  <text x="204" y="169" fill="#71849a" font-family="Arial,sans-serif" font-size="15">GESTÃO MUNICIPAL</text>
+  <text x="110" y="291" fill="#173657" font-family="Arial,sans-serif" font-size="52" font-weight="700">Sistema de Gestão e</text>
+  <text x="110" y="355" fill="#173657" font-family="Arial,sans-serif" font-size="52" font-weight="700">Produtividade Municipal</text>
+  <text x="110" y="414" fill="#637a91" font-family="Arial,sans-serif" font-size="23">Tarefas, documentos e secretarias em um só lugar.</text>
+  <rect x="110" y="462" width="264" height="58" rx="12" fill="url(#panel)"/>
+  <text x="145" y="499" fill="#fff" font-family="Arial,sans-serif" font-size="19" font-weight="700">Conheça o SIGPM</text>
+  <path d="M777 488c48-60 93-68 137-22 39-39 83-33 140 22v43H777z" fill="#9fc6b1"/>
+  <path d="M757 512c58-39 104-48 147-27 52-39 105-36 175 27v19H757z" fill="#77a98e"/>
+  <path d="M865 488v-99l70-52 70 52v99m-119-71h18m25 0h18m-61 31h18m25 0h18m-48 40v-39h40v39" fill="#f5f2e7" stroke="#627980" stroke-linejoin="round" stroke-width="8"/>
+</svg>
