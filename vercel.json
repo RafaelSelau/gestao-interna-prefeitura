@@ -11,7 +11,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 30,
-      "excludeFiles": "{backend/tests/**,backend/private_files/**,backend/sigpm*.sqlite3*,vercel_upload_4c7817b/**,assets/**,css/**,js/**}"
+      "excludeFiles": "{backend/tests/**,backend/private_files/**,backend/sigpm*.sqlite3*,vercel_upload_4c7817b/**}"
     }
   },
   "headers": [
