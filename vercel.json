@@ -6,6 +6,10 @@
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index.py?__sigpm_path=/api/:path*" },
     { "source": "/login", "destination": "/portal.html" },
+    { "source": "/dashboard", "destination": "/produtividade.html" },
+    { "source": "/tarefas", "destination": "/produtividade.html" },
+    { "source": "/documentos", "destination": "/produtividade.html" },
+    { "source": "/secretarias", "destination": "/produtividade.html" },
     { "source": "/", "destination": "/welcome.html" }
   ],
   "functions": {
@@ -31,6 +35,34 @@
     },
     {
       "source": "/produtividade.html",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" },
+        { "key": "Cache-Control", "value": "private, no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/dashboard",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" },
+        { "key": "Cache-Control", "value": "private, no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/tarefas",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" },
+        { "key": "Cache-Control", "value": "private, no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/documentos",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" },
+        { "key": "Cache-Control", "value": "private, no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/secretarias",
       "headers": [
         { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" },
         { "key": "Cache-Control", "value": "private, no-store, max-age=0" }
